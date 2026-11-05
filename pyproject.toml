@@ -1,0 +1,79 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "olsl"
+dynamic = ["version"]
+description = ''
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+keywords = []
+authors = [
+  { name = "Isaac David" },
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Programming Language :: Python :: Implementation :: PyPy",
+]
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.12",
+    "matplotlib>=3.8",
+    "pandas>=2.2",
+]
+
+[project.urls]
+Documentation = "https://github.com/isacdaavid/olsl#readme"
+Issues = "https://github.com/isacdaavid/olsl/issues"
+Source = "https://github.com/isacdaavid/olsl"
+
+[tool.hatch.version]
+path = "src/olsl/__about__.py"
+
+[tool.hatch.env]
+requires = ["hatch-conda"]
+
+[tool.hatch.envs.default]
+type = "conda"
+python = "3.11"
+# This ensures Hatch installs your local package in editable mode
+# so changes you make to the source code are reflected immediately.
+dev-mode = true
+dependencies = [
+    "pytest>=8.0",
+    "python-lsp-server>=1.10.0",
+    "mypy>=1.0.0",              # type checker
+    "pylsp-mypy>=0.6.0",
+    "flake8>=7.0.0",            # linter
+    "pylint>=3.0.0",            # linter
+    "black>=24.0.0",            # formatter
+    "python-lsp-black>=2.0.0",
+]
+
+[tool.hatch.envs.default.scripts]
+check = "mypy --install-types --non-interactive {args:src/olsl tests}"
+
+[tool.coverage.run]
+source_pkgs = ["olsl", "tests"]
+branch = true
+parallel = true
+omit = [
+  "src/olsl/__about__.py",
+]
+
+[tool.coverage.paths]
+olsl = ["src/olsl", "*/olsl/src/olsl"]
+tests = ["tests", "*/olsl/tests"]
+
+[tool.coverage.report]
+exclude_lines = [
+  "no cov",
+  "if __name__ == .__main__.:",
+  "if TYPE_CHECKING:",
+]
