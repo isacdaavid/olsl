@@ -8,12 +8,12 @@ reusable pieces already live in ``olsl.plotting``.
 
 from pathlib import Path
 
+from olsl.common.paths import figures_dir
 from olsl.common.patient_parameters import patient_parameters
 from olsl.models.latent_state import LatentState
 from olsl.simulation.run_example import run_example, save_results
 from olsl.tasks import pree
 from olsl.plotting import timeseries
-
 
 # --- Configuration --------------------------------------------------------
 
@@ -34,8 +34,7 @@ LATENT_MODELS = {'LatentState', 'InfiniteMixture',
 # Models that produce a sampled x_t sequence
 HARD_MODELS = {'LatentStateHard'}
 
-OUT_DIR = Path('figures')
-
+OUT_DIR = figures_dir('run_pree')
 
 # --- Main -----------------------------------------------------------------
 
