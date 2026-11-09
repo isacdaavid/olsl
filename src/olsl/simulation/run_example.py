@@ -79,7 +79,6 @@ def run_example(par, example, models, nrep, cases, observer=None,
             par_run = copy.deepcopy(par)
             par_run['case']      = case
             par_run['modelname'] = model_name
-            par_run['Lmax']      = par_run['ls']['ncop'] * par_run['L']
 
             mu_list         = []
             v_list          = []

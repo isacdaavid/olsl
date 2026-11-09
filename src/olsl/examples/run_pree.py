@@ -8,6 +8,7 @@ reusable pieces already live in ``olsl.plotting``.
 
 from pathlib import Path
 
+from olsl.common.patient_parameters import patient_parameters
 from olsl.models.latent_state import LatentState
 from olsl.simulation.run_example import run_example, save_results
 from olsl.tasks import pree
@@ -34,33 +35,6 @@ LATENT_MODELS = {'LatentState', 'InfiniteMixture',
 HARD_MODELS = {'LatentStateHard'}
 
 OUT_DIR = Path('figures')
-
-
-# --- Agent parameters (translation of PatientParameters) ------------------
-
-def patient_parameters():
-    return {
-        'tau': 10.0,
-        'L': 1, 'D': 1, 'C': 1, 'A': 1, 'center': 0.5,
-        'ls': {
-            'ncop':   10,
-            'sigma0': 0.5,
-            'gamma':  0.05,
-            'alpha0': 0.05,
-            'alpha1': 0.05,
-            'alpha2': 0.05,
-            'chi':    5,
-            'delta':  0.6,
-            'eta':    0.2,
-        },
-        'kf': {
-            'L': 2,
-            'Q': 0.01,
-            'R': 0.25,
-            'initP': 1.0,
-            'gamma': 0.05,
-        },
-    }
 
 
 # --- Main -----------------------------------------------------------------
