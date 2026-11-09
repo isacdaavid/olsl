@@ -40,9 +40,9 @@ python examples/run_...
 ## Testing
 
 ```{bash}
-pytest                          # all tests
-pytest tests/test_latent_state.py -v   # one file
+pytest                                                  # all tests
+pytest tests/test_latent_state.py -v                    # one file
 pytest tests/test_latent_state.py::test_rw_single_trial # one test
-pytest -k golden                # only golden-trajectory tests
+pytest -k golden                                        # only golden-trajectory tests
 ```
 
