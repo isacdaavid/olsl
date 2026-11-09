@@ -215,3 +215,48 @@ def plot_mmkf_tracking(results, model_name, case, short_name,
     fig.savefig(out_dir / f'MMKF_Tracking_Renewal_{short_name}_Case{case}.png',
                 dpi=300, bbox_inches='tight')
     plt.close(fig)
+
+# Append to timeseries.py
+
+CUE_COLORS = ['#222222', '#4C72B0', '#DD8452', '#55A868']
+
+
+def plot_associative_strength_per_cue(results, task_name, model_name,
+                                      cue_indices, cue_labels, xticks,
+                                      short_name, out_dir,
+                                      xlim=None, ylim=None,
+                                      cue_colors=None):
+    """Plot V[:, cue_indices] over trials, one line per cue.
+
+    The caller is expected to pass a per-task ``out_dir`` — the task name
+    is only used for the results-dict key lookup, not for the filename.
+    """
+    key = (model_name, task_name)
+    if key not in results['V']:
+        return
+
+    V = results['V'][key]['mean']    # (T+1, D*C*L)
+    T = V.shape[0] - 1
+
+    if cue_colors is None:
+        cue_colors = CUE_COLORS[:len(cue_indices)]
+
+    fig, ax = styled_figure()
+    for idx, label, color in zip(cue_indices, cue_labels, cue_colors):
+        ax.plot(V[:, idx], color=color, linewidth=LINE_W, label=label)
+
+    if xlim is None:
+        xlim = (0.5, T + 0.5)
+    if ylim is None:
+        sub = V[:, list(cue_indices)]
+        data_min, data_max = float(sub.min()), float(sub.max())
+        margin = 0.05 * max(data_max - data_min, 1e-6)
+        ylim = (data_min - margin, data_max + margin)
+
+    pretty_axes(ax, xlim=xlim, ylim=ylim, xticks=xticks)
+    ax.set_ylabel('Associative strength',
+                  fontweight='bold', fontsize=FONT_SIZE_LABEL)
+    ax.legend(loc='best', fontsize=11)
+
+    # out_dir is already per-task; filename omits the task name.
+    save(fig, out_dir / f'AssociativeStrength_{short_name}.png')
