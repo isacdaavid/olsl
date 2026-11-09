@@ -6,12 +6,14 @@ figure per (case-pair) to ``out_dir``.
 
 from pathlib import Path
 
+from matplotlib import pyplot as plt
 import numpy as np
 
 from .style import (
     COLOR_PARTIAL, COLOR_CONTINUOUS, LINE_W, FONT_SIZE_LABEL,
     pretty_axes, styled_figure, save,
 )
+
 
 def plot_associative_strength(results, model_name, cases_pair, pair_idx,
                               short_name, out_dir, xticks):
@@ -146,9 +148,6 @@ def plot_expectations(results, model_name, cases_pair, short_name,
     and legend labels — Renewal uses 'Expected reward' and condition
     names that reflect the task design.
     """
-    from matplotlib import pyplot as plt
-    from .style import (COLOR_PARTIAL, COLOR_CONTINUOUS, LINE_W,
-                        FONT_SIZE_LABEL, pretty_axes, styled_figure, save)
 
     fig, ax = styled_figure()
 
@@ -260,3 +259,359 @@ def plot_associative_strength_per_cue(results, task_name, model_name,
 
     # out_dir is already per-task; filename omits the task name.
     save(fig, out_dir / f'AssociativeStrength_{short_name}.png')
+
+# Append to timeseries.py
+
+def _setup_broken_axis(ax, ntrials, gap_visual=20):
+    """X-axis layout used by spontaneous-recovery plots.
+
+    Left half: trials 1..40 at x=1..40.
+    Right half: trials 41..ntrials at x=(40+gap_visual+1)..(40+gap_visual+ntrials-40).
+    The gap is purely visual — it represents the silent delay, not
+    actual trials — and is separated by a white-out on the y=0 line.
+    """
+    x_break = 40
+    x_offset = gap_visual
+    x_left  = np.arange(1, x_break + 1)
+    x_right = x_offset + np.arange(x_break + 1, ntrials + 1)
+    return x_left, x_right, x_break, x_offset
+
+
+def plot_spontaneous_recovery_expectations(results, model_name, cases,
+                                            case_labels, short_name, out_dir,
+                                            xticks=None, ylim=None,
+                                            case_colors=None):
+    """Expected reward (MU) over trials, broken-axis, one line per case."""
+    from matplotlib.patches import Rectangle
+
+    if case_colors is None:
+        case_colors = [COLOR_PARTIAL, COLOR_CONTINUOUS]
+
+    fig, ax = styled_figure()
+
+    for case, label, color in zip(cases, case_labels, case_colors):
+        key = (model_name, case)
+        if key not in results['MU']:
+            continue
+        mu = results['MU'][key]['mean']    # (T, D*A)
+        ntrials = mu.shape[0]
+
+        x_left, x_right, x_break, x_offset = _setup_broken_axis(ax, ntrials)
+
+        # Left half: acquisition + extinction
+        ax.plot(x_left, mu[:x_break, 0], color=color, linewidth=LINE_W,
+                label=label)
+        # Right half: renewal
+        ax.plot(x_right, mu[x_break:, 0], color=color, linewidth=LINE_W)
+        # End-of-extinction and start-of-renewal markers
+        ax.plot(x_break, mu[x_break - 1, 0], 'x', color=color,
+                markersize=12, markeredgewidth=3)
+        ax.plot(x_break + x_offset + 1, mu[x_break, 0], 'x', color=color,
+                markersize=12, markeredgewidth=3)
+
+    # White rectangle hides the axis spine in the visual gap
+    ax.add_patch(Rectangle((40.2, -0.1), 19.6, 0.2,
+                           facecolor='white', edgecolor='white', zorder=3))
+
+    if xticks is None:
+        xticks = [0, 20, 40, 60, 70]
+    ax.set_xticks(xticks)
+    ax.set_xticklabels(['0', '20', '40', '0', '10'])
+    ax.set_xlim(0, 71)
+    if ylim is None:
+        ylim = (-0.55, 0.55)
+    ax.set_ylim(ylim)
+    ax.set_ylabel('Associative strength', fontweight='bold',
+                  fontsize=FONT_SIZE_LABEL)
+    ax.legend(loc='best', fontsize=12)
+
+    save(fig, out_dir / f'AS_SponRec_{short_name}.png')
+
+
+def plot_spontaneous_recovery_beliefs(results, model_name, cases,
+                                       case_labels, short_name, out_dir,
+                                       xticks=None, case_colors=None):
+    """Dominant-state belief over trials, broken-axis, one line per case."""
+    from matplotlib.patches import Rectangle
+
+    if case_colors is None:
+        case_colors = [COLOR_PARTIAL, COLOR_CONTINUOUS]
+
+    fig, ax = styled_figure()
+
+    for case, label, color in zip(cases, case_labels, case_colors):
+        key = (model_name, case)
+        if key not in results['LSB']:
+            continue
+        lsb = results['LSB'][key]['mean']    # (T+1, L*ncop)
+        ntrials = lsb.shape[0] - 1
+
+        # Dominant state per case, chosen by maximum mean belief
+        dominant = int(np.argmax(lsb.mean(axis=0)))
+
+        x_left, x_right, x_break, x_offset = _setup_broken_axis(ax, ntrials)
+
+        # lsb[0] is pre-trial init; lsb[t] is belief after trial t
+        ax.plot(x_left, lsb[1:x_break + 1, dominant],
+                color=color, linewidth=LINE_W, label=label)
+        ax.plot(x_right, lsb[x_break + 1:, dominant],
+                color=color, linewidth=LINE_W)
+        ax.plot(x_break, lsb[x_break, dominant], 'x',
+                color=color, markersize=12, markeredgewidth=3)
+        ax.plot(x_break + x_offset + 1, lsb[x_break + 1, dominant], 'x',
+                color=color, markersize=12, markeredgewidth=3)
+
+    ax.add_patch(Rectangle((40.2, -0.1), 19.6, 0.2,
+                           facecolor='white', edgecolor='white', zorder=3))
+
+    if xticks is None:
+        xticks = [0, 20, 40, 60, 70]
+    ax.set_xticks(xticks)
+    ax.set_xticklabels(['0', '20', '40', '0', '10'])
+    ax.set_xlim(0, 82)
+    ax.set_ylim(-0.1, 1.1)
+    ax.set_ylabel('Beliefs', fontweight='bold', fontsize=FONT_SIZE_LABEL)
+    ax.legend(loc='best', fontsize=12)
+
+    save(fig, out_dir / f'Beliefs_SponRec_{short_name}.png')
+
+def _context_shift_belief(lsb_end, gamma, n_silent, n_active):
+    """Analytically apply ContextShift over n_silent silent trials.
+
+    Mirrors LatentState.ContextShift::
+
+        prob_stay = (1 - gamma) ** (n_silent - 1)
+        lsb = lsb * prob_stay + (1 - prob_stay) / n_active
+
+    Wait — ContextShift uses (gap - 1), not gap. With gap = case and
+    n_silent = case - 1 silent trials, the exponent is n_silent - 1.
+    (When case=1 → n_silent=0, ContextShift at trial 41 is skipped
+    because Δtime=1. When case=2 → n_silent=1, exponent 0, no decay.
+    Consistent.)
+    """
+    if n_silent <= 0:
+        return lsb_end.copy()
+    prob_stay = (1 - gamma) ** (n_silent - 1)
+    target = 1.0 / n_active
+    return lsb_end * prob_stay + (1 - prob_stay) * target
+
+
+def plot_spontaneous_recovery_dilution(results, model_name, cases,
+                                        case_labels, gamma, short_name,
+                                        out_dir, state_idx=0,
+                                        xticks=None, case_colors=None,
+                                        case_linestyles=None):
+    """Belief in State 1 through the delay, with an analytic decay curve
+    bridging the silent gap.
+
+    Line styles distinguish the two cases end-to-end (including the
+    gap segment): solid for the long-gap case, dashed for the no-gap
+    case. This keeps each case visually traceable across the whole plot
+    without relying on a third linestyle for the gap alone.
+
+    Parameters
+    ----------
+    gamma : float
+        LatentState transition probability (par['ls']['gamma']).
+    state_idx : int
+        Which state to plot. Default 0 = State 1 = acquisition state.
+    case_linestyles : list of str, optional
+        One linestyle per case. Defaults to ``['--', '-']`` — dashed for
+        case 1 (no gap), solid for the last case (long gap).
+    """
+    from matplotlib.patches import Rectangle
+
+    if case_colors is None:
+        case_colors = [COLOR_PARTIAL, COLOR_CONTINUOUS]
+    if case_linestyles is None:
+        case_linestyles = ['--', '--']  # dashed=no gap, solid=long gap
+
+    fig, ax = styled_figure()
+
+    for case, label, color, ls in zip(cases, case_labels,
+                                      case_colors, case_linestyles):
+        key = (model_name, case)
+        if key not in results['LSB']:
+            continue
+        lsb = results['LSB'][key]['mean']
+        ntrials = lsb.shape[0] - 1
+        n_silent = case - 1
+
+        lsb_end_ext = lsb[40, :]
+        n_active_case = max(1, int(np.sum(lsb_end_ext > 1e-10)))
+
+        # --- Left half: acquisition + extinction, posterior per trial ---
+        x_left = np.arange(1, 41)
+        ax.plot(x_left, lsb[1:41, state_idx], color=color,
+                linestyle=ls, linewidth=LINE_W, label=label)
+
+        # --- Right half: renewal, posterior per trial ---
+        x_offset = 20
+        x_right = x_offset + np.arange(41, ntrials + 1)
+        ax.plot(x_right, lsb[41:, state_idx], color=color,
+                linestyle=ls, linewidth=LINE_W)
+
+        # --- Gap: analytic exponential decay from posterior-40 to prior-41 ---
+        # Same linestyle as the surrounding curve, so the case remains
+        # traceable end-to-end.
+        if n_silent > 0:
+            tau = np.linspace(0, n_silent, 200)
+            prob_stay_tau = (1 - gamma) ** tau
+            target = 1.0 / n_active_case
+            belief_tau = (lsb_end_ext[state_idx] * prob_stay_tau
+                          + (1 - prob_stay_tau) * target)
+            x_gap = 40 + x_offset * tau / n_silent
+            ax.plot(x_gap, belief_tau, color=color,
+                    linestyle=ls, linewidth=LINE_W)
+
+        # --- Endpoint markers ---
+        ax.plot(40, lsb[40, state_idx], 'x', color=color,
+                markersize=12, markeredgewidth=3)
+        if n_silent > 0:
+            prior_41 = _context_shift_belief(
+                lsb_end_ext, gamma, n_silent, n_active_case,
+            )[state_idx]
+        else:
+            prior_41 = lsb[40, state_idx]
+        ax.plot(40 + x_offset + 1, prior_41, 'x', color=color,
+                markersize=12, markeredgewidth=3)
+
+    # Visual gap
+    ax.add_patch(Rectangle((40.2, -0.1), 19.6, 0.2,
+                           facecolor='white', edgecolor='white', zorder=3))
+
+    if xticks is None:
+        xticks = [0, 20, 40, 60, 70]
+    ax.set_xticks(xticks)
+    ax.set_xticklabels(['0', '20', '40', '0', '10'])
+    ax.set_xlim(0, 71)
+    ax.set_ylim(-0.1, 1.1)
+    ax.set_ylabel(f'Belief in State {state_idx + 1}',
+                  fontweight='bold', fontsize=FONT_SIZE_LABEL)
+    ax.set_title('Belief dilution during silent delay', fontsize=13)
+    ax.legend(loc='best', fontsize=12)
+
+    save(fig, out_dir / f'BeliefDilution_SponRec_{short_name}.png')
+
+# Append to timeseries.py
+
+# Colors used for the schedule grid: one per cue row.
+SCHEDULE_CUE_COLORS = ['#d62728', '#ffcc33', '#2ca02c']   # food, light, tone
+
+
+def plot_cue_schedule(par, cue_names, title, out_dir, filename):
+    """Render a cue-present schedule as a colored patch grid.
+
+    Rows are cues (``cue_names``); columns are trials. A cell is filled
+    with the cue's color when that cue is present on that trial, and
+    white otherwise.
+
+    Uses the first ``len(cue_names)`` columns of ``par['outcomes']`` —
+    for LatentState these are [Food, Light, Tone] (interaction is
+    column 3, ignored here); for non-LatentState they are all columns.
+    """
+    from matplotlib.patches import Rectangle
+
+    trialorder = par['trialorder']
+    outcomes   = par['outcomes'][:, :len(cue_names)]
+    ntrials    = len(trialorder)
+    n_cues     = len(cue_names)
+
+    fig, ax = plt.subplots(figsize=(12, 3))
+    for t in range(ntrials):
+        row = int(trialorder[t]) - 1
+        for j in range(n_cues):
+            present = outcomes[row, j] > 0
+            color   = SCHEDULE_CUE_COLORS[j] if present else 'white'
+            ax.add_patch(Rectangle(
+                (t + 0.5, j + 0.5), 1, 1,
+                facecolor=color, edgecolor='none', alpha=0.75,
+            ))
+
+    ax.set_xlim(0, ntrials)
+    ax.set_ylim(0.5, n_cues + 0.5)
+    ax.set_yticks(range(1, n_cues + 1))
+    ax.set_yticklabels(cue_names)
+    ax.set_xticks([20, 40, 60])
+    ax.set_xlabel('Trial')
+    ax.set_title(title, fontsize=13)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+    save(fig, out_dir / filename)
+
+
+def plot_cue_strength_zoomed(results, model_name, cases, case_labels,
+                              cue_idx, short_name, out_dir,
+                              xlim, ylim, xticks, filename_stem):
+    """Plot V[:, cue_idx] over trials, one line per case, zoomed to xlim.
+
+    One line per case, so both groups' trajectories for a single cue can
+    be compared directly. Distinct from plot_associative_strength_per_cue:
+    that one plots several cues from a *single* condition; this one plots
+    one cue across *several* conditions.
+
+    Uses V[1:], matching the intent of MATLAB's plot(V(1:end-1, ...)) —
+    showing post-trial values (1..ntrials) rather than the pre-trial init.
+    """
+    fig, ax = styled_figure()
+
+    ntrials = None
+    for case, label, color in zip(
+        cases, case_labels, [COLOR_CONTINUOUS, COLOR_PARTIAL],
+    ):
+        key = (model_name, case)
+        if key not in results['V']:
+            continue
+        V = results['V'][key]['mean']
+        ntrials = V.shape[0] - 1
+        x = np.arange(1, ntrials + 1)
+        ax.plot(x, V[1:, cue_idx], color=color,
+                linewidth=LINE_W, label=label)
+
+    pretty_axes(ax, xlim=xlim, ylim=ylim, xticks=xticks)
+    ax.set_ylabel('Associative strength',
+                  fontweight='bold', fontsize=FONT_SIZE_LABEL)
+    ax.legend(loc='best', fontsize=11)
+
+    save(fig, out_dir / f'{filename_stem}_{short_name}.png')
+
+
+def plot_beliefs_top2(results, model_name, cases, case_labels,
+                      short_name, out_dir, xlim, ylim, xticks,
+                      filename_stem):
+    """Plot the top-2 dominant states per case, zoomed to xlim.
+
+    For each case, plots the two states with the highest mean belief:
+    the top one with a solid line, the second with a dashed line, and
+    colors distinguishing cases. Matches MATLAB's pattern in
+    RunWilsonBoumphreyPearce.m, where dominant-state indices often
+    differ between groups and are picked independently per case.
+    """
+    fig, ax = styled_figure()
+
+    for case, label, color in zip(
+        cases, case_labels, [COLOR_CONTINUOUS, COLOR_PARTIAL],
+    ):
+        key = (model_name, case)
+        if key not in results['LSB']:
+            continue
+        lsb = results['LSB'][key]['mean']          # (T+1, L*ncop)
+        ntrials = lsb.shape[0] - 1
+        x = np.arange(1, ntrials + 2)              # 1..T+1 (incl. init)
+        means = lsb.mean(axis=0)
+        order = np.argsort(means)[::-1]
+
+        for rank, ls in zip(range(2), ['-', '--']):
+            if rank >= len(order):
+                break
+            state_idx = int(order[rank])
+            ax.plot(x, lsb[:, state_idx], color=color, linestyle=ls,
+                    linewidth=LINE_W,
+                    label=f'{label}, state {rank + 1}')
+
+    pretty_axes(ax, xlim=xlim, ylim=ylim, xticks=xticks)
+    ax.set_ylabel('Beliefs', fontweight='bold', fontsize=FONT_SIZE_LABEL)
+    ax.legend(loc='best', fontsize=10)
+
+    save(fig, out_dir / f'{filename_stem}_{short_name}.png')
