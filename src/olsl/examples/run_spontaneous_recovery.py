@@ -52,10 +52,19 @@ def main():
         timeseries.plot_spontaneous_recovery_beliefs(
             results, model_name, CASES, CASE_LABELS, short, out_dir,
         )
+        timeseries.plot_spontaneous_recovery_beliefs(
+            results, model_name, CASES, CASE_LABELS, short, out_dir,
+            heatmap=True,
+        )
         # NEW: belief in the extinction state through the delay
         timeseries.plot_spontaneous_recovery_dilution(
             results, model_name, CASES, CASE_LABELS,
             gamma=par['ls']['gamma'], short_name=short, out_dir=out_dir,
+        )
+        timeseries.plot_spontaneous_recovery_dilution(
+            results, model_name, CASES, CASE_LABELS,
+            gamma=par['ls']['gamma'], short_name=short, out_dir=out_dir,
+            heatmap=True,
         )
 
     print(f'Figures written to {out_dir.resolve()}')

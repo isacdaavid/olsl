@@ -69,6 +69,11 @@ def main():
                 results, model_name, case,
                 model_label=short, out_dir=out_dir,
             )
+            timeseries.plot_beliefs_compound_window(
+                results, model_name, case,
+                model_label=short, out_dir=out_dir,
+                heatmap=True,
+            )
 
     print(f'Figures written to {out_dir.resolve()}')
 

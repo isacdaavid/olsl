@@ -66,6 +66,10 @@ def main():
             results, model_name, SELECTED, CASE_COLORS, short, out_dir,
             state_idx=0,
         )
+        timeseries.plot_beliefs_by_case(
+            results, model_name, SELECTED, CASE_COLORS, short, out_dir,
+            state_idx=0, heatmap=True,
+        )
 
     print(f'Figures written to {out_dir.resolve()}')
 

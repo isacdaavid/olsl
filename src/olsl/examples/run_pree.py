@@ -68,6 +68,10 @@ def main():
                     results, model_name, cases_pair, pair_idx,
                     short, OUT_DIR, xticks,
                 )
+                timeseries.plot_beliefs(
+                    results, model_name, cases_pair, pair_idx,
+                    short, OUT_DIR, xticks, heatmap=True,
+                )
             if model_name in HARD_MODELS:
                 timeseries.plot_sampled_belief(
                     results, model_name, cases_pair, pair_idx,

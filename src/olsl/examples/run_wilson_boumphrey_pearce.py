@@ -86,6 +86,12 @@ def main():
             xlim=xlim, ylim=(0, 1), xticks=xticks,
             filename_stem='Beliefs',
         )
+        timeseries.plot_beliefs_top2(
+            results, model_name, CASES, CASE_LABELS,
+            short_name=short, out_dir=out_dir,
+            xlim=xlim, ylim=(0, 1), xticks=xticks,
+            filename_stem='Beliefs', heatmap=True,
+        )
 
     print(f'Figures written to {out_dir.resolve()}')
 
