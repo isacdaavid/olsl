@@ -615,3 +615,146 @@ def plot_beliefs_top2(results, model_name, cases, case_labels,
     ax.legend(loc='best', fontsize=10)
 
     save(fig, out_dir / f'{filename_stem}_{short_name}.png')
+
+# Append to timeseries.py
+
+def plot_delta_associative_strength(results, model_name, case,
+                                     model_label, out_dir,
+                                     cue_indices=(0, 1),
+                                     cue_labels=('A', 'B'),
+                                     ylim=(-0.5, 0.75), tol=0.02,
+                                     case_labels=None):
+    """Bar plot of Δ associative strength from trial 501 to trial 509.
+
+    Translation of MATLAB RunRescorla2000.m's first plot loop.
+
+    ⚠ DEVIATION FROM MATLAB: The source reads
+        h1 = sum(MU{l,k}([501,509], 1), 2); h1 = h1(2) - h1(1);
+        h2 = sum(MU{l,k}([501,509], 2), 2); h2 = h2(2) - h2(1);
+    which accesses columns 1 and 2 of MU. For Rescorla2000 (D=1, A=1),
+    MU has shape (512, 1) — accessing column 2 raises IndexError. Since
+    the title says "Δ Associative strength" and the legend is {A, B},
+    we interpret the intent as "change in associative strength (V) for
+    cues A and B". This version uses V[:, cue_idx], which for LatentState
+    (C=10) maps to columns 0=A and 1=B, and for non-LatentState (C=5)
+    the same two indices.
+
+    Parameters
+    ----------
+    cue_indices : tuple of int
+        V-column indices for the two bars. Default (0, 1) = A, B.
+    cue_labels : tuple of str
+        Legend labels.
+    ylim : tuple of float
+        Y-axis limits. MATLAB used (-0.5, 0.75).
+    tol : float
+        Padding added to bar tops so bars are visible even when the
+        Δ-value is near zero. Mirrors MATLAB's ``tol * sign(h)``.
+    """
+    from matplotlib.patches import Rectangle
+
+    key = (model_name, case)
+    if key not in results['V']:
+        return
+
+    V = results['V'][key]['mean']
+    # MATLAB indexes [501, 509]; in 0-based that's [500, 508].
+    # V has a leading init row, so V[500] is post-trial-500 (1-based 500)
+    # ... wait: MATLAB's MU(501) is post-trial-501, so 0-based V[501].
+    # MATLAB indexes V/MU at 1-based trial numbers. V[t] is post-trial-t.
+    # So MATLAB MU(501) = 0-based V[501] (post trial 501), MU(509) = V[509].
+    idx_before = 500    # post-trial-500 (last training)
+    idx_after = 508     # post-trial-508 (last compound)
+
+    deltas = []
+    for ci in cue_indices:
+        delta = float(V[idx_after, ci] - V[idx_before, ci])
+        deltas.append(delta)
+
+    fig, ax = styled_figure()
+    bar_colors = [COLOR_PARTIAL, COLOR_CONTINUOUS]
+    bar_centers = [1, 2]
+
+    for center, delta, color, label in zip(
+        bar_centers, deltas, bar_colors, cue_labels,
+    ):
+        height = delta + tol * np.sign(delta) if delta != 0 else tol
+        # Draw from y=0 to height (positive or negative)
+        bottom = min(0, height)
+        top    = max(0, height)
+        ax.add_patch(Rectangle(
+            (center - 0.5, bottom), 1.0, top - bottom,
+            facecolor=color, edgecolor='none', alpha=0.75,
+        ))
+
+    ax.set_xlim(0.5, 2.5)
+    ax.set_ylim(*ylim)
+    ax.set_xticks([])
+    ax.set_ylabel('Δ Associative strength',
+                  fontweight='bold', fontsize=FONT_SIZE_LABEL)
+    ax.legend(cue_labels, loc='best', frameon=False)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+    case_str = f'_Case{case}' if case_labels is None else f'_{case_labels}'
+    safe_case = case_str.replace(' ', '').replace('(', '').replace(')', '')
+    save(fig, out_dir / f'AssociativeStrength_{model_label}{safe_case}.png')
+
+
+def plot_beliefs_compound_window(results, model_name, case,
+                                  model_label, out_dir,
+                                  state_indices=(0, 1, 2),
+                                  xlim=(490, 510),
+                                  xticks=(495, 500, 505),
+                                  shade_window=(501.5, 508.5)):
+    """Plot 3 states' belief curves across the compound training window.
+
+    Translation of MATLAB RunRescorla2000.m's second plot loop, with
+    two corrections to the MATLAB source:
+
+    1. MATLAB's ``patch([501.5, 501.5, 0, 0]', ...)`` has degenerate
+       coordinates that don't form a sensible shaded region. We use
+       ``shade_window=(501.5, 508.5)``, which matches the compound
+       phase (trials 501–508) — the presumably-intended behavior.
+    2. MATLAB's inner ``j``-loop re-plots each state's curve twice,
+       which appears to be a copy-paste bug. This version plots each
+       state once.
+
+    Uses ``state_indices`` directly rather than "dominant" sorting,
+    since the Rescorla plot is specifically showing the trajectory of
+    the first three latent states.
+    """
+    from matplotlib.patches import Rectangle
+
+    key = (model_name, case)
+    if key not in results['LSB']:
+        return
+
+    lsb = results['LSB'][key]['mean']   # (T+1, L*ncop)
+    n_states = lsb.shape[1]
+    available = [i for i in state_indices if i < n_states]
+    if not available:
+        return
+
+    fig, ax = styled_figure()
+
+    # Shaded compound window (trials 501-508)
+    ax.axvspan(shade_window[0], shade_window[1],
+               facecolor='grey', alpha=0.1, edgecolor='none', zorder=0)
+
+    # Belief curves — 3 line styles for 3 states, all black (matches MATLAB)
+    linestyles = ['-', '--', '--']
+    for rank, state_idx in enumerate(available):
+        ls = linestyles[rank] if rank < len(linestyles) else '-'
+        x = np.arange(1, lsb.shape[0] + 1)   # 1..T+1 (incl. init)
+        ax.plot(x, lsb[:, state_idx], color='black',
+                linestyle=ls, linewidth=LINE_W,
+                label=f'State {state_idx + 1}')
+
+    pretty_axes(ax, xlim=xlim, ylim=(0, 1), xticks=xticks)
+    ax.set_ylabel('Beliefs', fontweight='bold', fontsize=FONT_SIZE_LABEL)
+    ax.legend(loc='best', fontsize=11)
+
+    save(fig, out_dir / f'Beliefs_{model_label}_Case{case}.png')
+
+
