@@ -758,3 +758,162 @@ def plot_beliefs_compound_window(results, model_name, case,
     save(fig, out_dir / f'Beliefs_{model_label}_Case{case}.png')
 
 
+# Append to timeseries.py
+
+# Default per-selected-case colors for memory-modification plots.
+# Matches MATLAB's clr(2), clr(3), clr(4) for ix=[100, 5, 1].
+MM_CASE_COLORS = {
+    100: '#4C72B0',   # blue
+    5:   '#DD8452',   # orange
+    1:   '#55A868',   # green
+}
+
+
+def plot_retrieval_time(results, model_name, cases, short_name, out_dir,
+                        xticks=None, color=None):
+    """Final test-trial associative strength vs. retrieval→extinction gap.
+
+    For each case (which sets the delay between retrieval and extinction),
+    plot the MU value on the final test trial. As the delay grows past the
+    reconsolidation window, this value rises — that's the paper's core
+    result.
+
+    Parameters
+    ----------
+    cases : sequence of int
+        Case values (the retrieval→extinction gap parameter), typically
+        1..150 as in the MATLAB RunMonfilsSchiller.m loop.
+    """
+    if color is None:
+        color = '#4C72B0'
+
+    y_vals = []
+    for case in cases:
+        key = (model_name, case)
+        if key not in results['MU']:
+            y_vals.append(np.nan)
+            continue
+        mu = results['MU'][key]['mean']           # (T, D*A)
+        y_vals.append(float(mu[-1, 0]))           # final trial
+
+    x_vals = np.arange(len(cases))                # 0..len-1, matches MATLAB sp*(0:end-1)
+
+    fig, ax = styled_figure()
+    ax.plot(x_vals, y_vals, '-', color=color, linewidth=LINE_W,
+            marker='.', markersize=8)
+    ax.set_xlim(-0.5, len(cases) - 0.5)
+    if xticks is None:
+        xticks = [0, 50, 100, 150]
+    ax.set_xticks(xticks)
+    ax.set_ylabel('Associative strength, testing',
+                  fontweight='bold', fontsize=FONT_SIZE_LABEL)
+    ax.set_xlabel('Time delay after retrieval',
+                  fontweight='bold', fontsize=FONT_SIZE_LABEL)
+    save(fig, out_dir / f'RetrievalTime_{short_name}.png')
+
+
+def plot_expectations_by_case(results, model_name, selected_cases,
+                              case_colors, short_name, out_dir,
+                              ntrials=24, acq_end=3, retr=4, test=24,
+                              ylim=None, inset=False):
+    """MU trajectory over trials for selected cases, one line per case.
+
+    Reproduces MATLAB's per-trial segmentation:
+
+        x=1..3   acquisition (line)
+        x=4      retrieval (marker, no line)
+        x=5..T-1 extinction (line)
+        x=T      test (marker, no line)
+
+    The gap between segments is intentional (visual emphasis on retrieval
+    and test as "moments" rather than a continuous trajectory).
+
+    Parameters
+    ----------
+    selected_cases : sequence of int
+        Case values to plot (e.g. [100, 5, 1]).
+    case_colors : dict mapping case → color.
+    inset : bool
+        If True, also produce a zoomed view of the test trial
+        (xlim=[T-0.5, T+0.5]) saved as a separate PNG.
+    """
+    fig, ax = styled_figure()
+
+    for case in selected_cases:
+        key = (model_name, case)
+        if key not in results['MU']:
+            continue
+        mu = results['MU'][key]['mean'][:, 0]
+        color = case_colors[case]
+
+        ax.plot(range(1, acq_end + 1), mu[:acq_end],
+                '-', color=color, linewidth=LINE_W, label=f'Case {case}')
+        ax.plot(retr, mu[retr - 1], 'x', color=color,
+                markersize=12, markeredgewidth=3)
+        ax.plot(range(retr + 1, ntrials), mu[retr:ntrials - 1],
+                '-', color=color, linewidth=LINE_W)
+        ax.plot(test, mu[ntrials - 1], 'x', color=color,
+                markersize=12, markeredgewidth=3)
+
+    ax.set_xlim(0.5, ntrials + 0.5)
+    ax.set_xticks([retr, test])
+    ax.set_xticklabels(['Retrieval', 'Test'])
+    if ylim is not None:
+        ax.set_ylim(*ylim)
+    ax.set_ylabel('Associative strength',
+                  fontweight='bold', fontsize=FONT_SIZE_LABEL)
+    ax.legend(loc='best', fontsize=11)
+    save(fig, out_dir / f'Expectations_{short_name}.png')
+
+    if inset:
+        # Zoom to the test trial to show small differences.
+        fig2, ax2 = styled_figure()
+        for case in selected_cases:
+            key = (model_name, case)
+            if key not in results['MU']:
+                continue
+            mu_val = float(results['MU'][key]['mean'][-1, 0])
+            ax2.plot(test, mu_val, 'x', color=case_colors[case],
+                     markersize=14, markeredgewidth=3, label=f'Case {case}')
+        ax2.set_xlim(test - 0.5, test + 0.5)
+        save(fig2, out_dir / f'Inset_{short_name}.png')
+
+
+def plot_beliefs_by_case(results, model_name, selected_cases,
+                         case_colors, short_name, out_dir,
+                         state_idx=0, ntrials=24, acq_end=3, retr=4,
+                         test=24, ylim=(0, 1)):
+    """Belief in a single state over trials, one line per case.
+
+    Same segment structure as plot_expectations_by_case. State 1
+    (state_idx=0) is the acquisition state — the state whose belief
+    dilution and reformation carries the memory-modification signal.
+    """
+    fig, ax = styled_figure()
+
+    for case in selected_cases:
+        key = (model_name, case)
+        if key not in results['LSB']:
+            continue
+        lsb = results['LSB'][key]['mean']          # (T+1, L*ncop)
+        color = case_colors[case]
+
+        # lsb[0] = pre-trial init; lsb[t] = post-trial-t.
+        # Segments aligned to trials 1..T, so use lsb[1:] throughout.
+        ax.plot(range(1, acq_end + 1), lsb[1:acq_end + 1, state_idx],
+                '-', color=color, linewidth=LINE_W, label=f'Case {case}')
+        ax.plot(retr, lsb[retr, state_idx], 'x', color=color,
+                markersize=12, markeredgewidth=3)
+        ax.plot(range(retr + 1, ntrials), lsb[retr + 1:ntrials, state_idx],
+                '-', color=color, linewidth=LINE_W)
+        ax.plot(test, lsb[ntrials, state_idx], 'x', color=color,
+                markersize=12, markeredgewidth=3)
+
+    ax.set_xlim(0.5, ntrials + 0.5)
+    ax.set_xticks([retr, test])
+    ax.set_xticklabels(['Retrieval', 'Test'])
+    ax.set_ylim(*ylim)
+    ax.set_ylabel(f'Belief in State {state_idx + 1}',
+                  fontweight='bold', fontsize=FONT_SIZE_LABEL)
+    ax.legend(loc='best', fontsize=11)
+    save(fig, out_dir / f'Beliefs_{short_name}.png')
