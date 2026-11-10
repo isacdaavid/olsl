@@ -164,6 +164,7 @@ def LatentStateBeliefs(lsb, Lmax, LL, par):
 
 
 def NewState(V, lsb, Lmax, c_vec, win, LL, q, par):
+    # Check if new state should be added
     if Lmax < par['ls']['ncop']:
 
         tmp = np.zeros(par['L'] * par['ls']['ncop'])
@@ -171,8 +172,10 @@ def NewState(V, lsb, Lmax, c_vec, win, LL, q, par):
         ix1_end = int(par['L'] * Lmax)
         ix2_start = int(par['L'] * Lmax)
         ix2_end = int(par['L'] * Lmax + par['L'])
+        # Concatenate indices for ix1 and ix2
         idx = np.r_[0:ix1_end, ix2_start:ix2_end]
 
+        # Current (scaled) likelihood
         mx = np.max(np.exp(LL[idx]))
         tmp[:ix1_end] = (
             ((1 - par['ls']['gamma']) * lsb[:ix1_end]
@@ -180,6 +183,7 @@ def NewState(V, lsb, Lmax, c_vec, win, LL, q, par):
             * np.exp(LL[:ix1_end] - mx)
         )
         l0 = np.sum(tmp)
+        # (Scaled) likelihood if adding new states
         l1 = np.sum((1.0 / par['L']) * np.exp(LL[ix2_start:ix2_end] - mx))
 
         # log(0) is legitimate here when the observed reward is
@@ -191,22 +195,27 @@ def NewState(V, lsb, Lmax, c_vec, win, LL, q, par):
         if np.isnan(log_ratio):
             log_ratio = 0.0
 
+        # Update change point statistic
         q = np.maximum(q + log_ratio - par['ls']['delta'], 0.0)
 
         if q >= par['ls']['eta']:
             Lmax = Lmax + 1
             q = 0.0
 
+            # Update beliefs
             tmp[idx] = (
                 ((1 - par['ls']['gamma']) * lsb[idx]
                  + par['ls']['gamma'] / (Lmax * par['L']))
                 * np.exp(LL[idx])
             )
 
+            # Add in new associative strength
+            # c_vec is (D, C, L). We are at state Lmax-1 (0-based)
             c_current = c_vec[:, :, Lmax - 1]
             Vnew = c_current * win[:, None] / np.sum(c_current**2, axis=1, keepdims=True)
             V[:, :, Lmax - 1] = Vnew
 
+            # Normalize
             lsb = tmp / np.sum(tmp)
 
     return V, lsb, Lmax, q
