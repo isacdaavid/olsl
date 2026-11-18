@@ -31,7 +31,7 @@ def LatentState(par, agent, world):
                 agent['V'] = np.zeros((par['D'], par['C'], L))
 
             # Each hypothesis is initially active
-            agent['Lmax'] = 1 
+            agent['Lmax'] = 1
 
             # Change point statistic
             agent['q'] = 0.0
@@ -43,7 +43,7 @@ def LatentState(par, agent, world):
             else:
                 agent['lsb'][:par['L']] = 1.0 / par['L']
 
-            # Initial B matrix (identity) for cues per dimension & state 
+            # Initial B matrix (identity) for cues per dimension & state
             agent['B'] = np.zeros((par['C'], par['C'], par['D'], L))
             for d in range(par['D']):
                 for l in range(L):
@@ -51,20 +51,20 @@ def LatentState(par, agent, world):
 
             # Initial variance matrix of expected mean
             agent['sigmasq'] = par['ls']['sigma0'] ** 2
-            
+
         return agent
 
     # -------------------------------------------------------------------------
-    # Update of agent    
+    # Update of agent
     # -------------------------------------------------------------------------
     else:
         # Get variables
-        V         = agent['V']              
-        lsb       = agent['lsb']            
-        B         = agent['B']              
-        Lmax      = agent['Lmax']           
-        q         = agent['q']              
-        sigmasq0  = agent['sigmasq']        
+        V         = agent['V']
+        lsb       = agent['lsb']
+        B         = agent['B']
+        Lmax      = agent['Lmax']
+        q         = agent['q']
+        sigmasq0  = agent['sigmasq']
         c_vec     = world['c_vec']
         # Standardize win to shape (D, A)
         win = world['win'] - par['center']
@@ -85,11 +85,11 @@ def LatentState(par, agent, world):
             np.sum(V[..., None] * c_vec, axis=1),
             (par['D'], L, par['A'])
         )
-        
+
         # Value function per arm: (D, A)
         # We use lsb[None, :, None] to broadcast (D, L, A) * (1, L, 1)
         mu0 = np.reshape(np.sum(mu * lsb[None, :, None], axis=1), (par['D'], par['A']))
-        
+
         # Choose arm and update relevant variables based on arm
         arm, _ = SoftMaxChoice(mu0, par)
         win = win[:, arm]           # (D,)
@@ -131,7 +131,7 @@ def ContextShift(lsb, Lmax, par):
     if 'context' in par and par['t'] in par['context']:
         lsb[:par['L']*Lmax] = 1.0
         lsb = lsb / np.sum(lsb)
-        
+
     return lsb
 
 def LogLikelihood(win, mu, sigmasq, Lmax, L, ncop):
@@ -142,10 +142,10 @@ def LogLikelihood(win, mu, sigmasq, Lmax, L, ncop):
 
     # Index of activated states
     ix = int((L / ncop) * Lmax)
-    
+
     # Error: win is (D,), mu is (D, L). win[:, None] is (D, 1)
     LL[:ix] = np.sum(-(win[:, None] - mu[:, :ix])**2 / (2 * sigmasq), axis=0)
-    
+
     return LL
 
 def LatentStateBeliefs(lsb, Lmax, LL, par):
@@ -154,7 +154,7 @@ def LatentStateBeliefs(lsb, Lmax, LL, par):
 
     # Current (scaled) likelihood
     tmp = np.zeros(par['L'] * par['ls']['ncop'])
-    
+
     # We use np.max(LL[:ix1]) for numerical stability
     tmp[:ix1] = ((1 - par['ls']['gamma']) * lsb[:ix1] + par['ls']['gamma'] / (Lmax * par['L'])) * np.exp(LL[:ix1] - np.max(LL[:ix1]))
 
