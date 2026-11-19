@@ -3,10 +3,9 @@
 Each function takes a ``results`` dict (from run_example) and writes one
 figure per (case-pair) to ``out_dir``.
 
-Belief-producing functions (beliefs, sampled states, MMKF panels) accept
-``heatmap=True`` to additionally produce a heatmap variant, where y-axis
-is latent state, x-axis is trial, and color encodes belief probability.
-Line-plot behavior is unchanged.
+Belief-producing functions accept ``heatmap=True`` to render a heatmap
+variant instead of their corresponding line plot. Posterior heatmaps use
+latent state on the y-axis, trial on the x-axis, and color for belief.
 """
 
 from matplotlib import pyplot as plt
@@ -38,33 +37,34 @@ def _sequential_cmap(color, name='case_seq'):
 
 
 def _used_states(lsb_list, threshold=1e-3):
-    """Number of latent states actually engaged across a list of belief arrays.
+    """Count the latent-state columns engaged across several belief arrays.
 
-    ``lsb_list``: sequence of arrays of shape (T+1, L).
-    Returns the maximum ``k`` such that some state ``k`` had belief
-    ``> threshold`` on at least one trial, across any case. Guarantees
-    ``>= 1`` so a perfectly uniform run still shows one row.
+    Each array has shape ``(T+1, L)``. A state is considered used when its
+    maximum belief exceeds ``threshold`` on at least one trial. The result
+    is at least one so a uniform run still produces a visible heatmap row.
     """
     max_used = 1
     for lsb in lsb_list:
+        if lsb is None:
+            continue
         used = int(np.sum(np.max(lsb, axis=0) > threshold))
         max_used = max(max_used, used)
     return max_used
 
 
 def _style_colorbar(cbar, label=None):
-    """Match colorbar label/tick sizes to the time-series axis conventions."""
+    """Apply shared label/tick styling and widen vertical colorbars."""
     if label is not None:
         cbar.set_label(label, fontweight='bold', fontsize=FONT_SIZE_LABEL)
-
     cbar.ax.tick_params(labelsize=14)
 
-    # Make vertical colorbars 4x wider.
+    # A vertical colorbar's box aspect is height / width. Reducing it by
+    # four makes the bar approximately four times wider without changing
+    # its allocated height.
     if cbar.orientation == 'vertical':
         aspect = cbar.ax.get_box_aspect()
         if aspect is not None:
-            cbar.ax.set_box_aspect(aspect / 2)
-
+            cbar.ax.set_box_aspect(aspect / 4)
     return cbar
 
 
@@ -77,34 +77,29 @@ def _add_case_legend(ax, label, color):
               frameon=False, handletextpad=0.4, borderaxespad=0.4)
 
 
+def _format_line_plot(ax, ylabel, *, xlim=None, ylim=None, xticks=None,
+                      xticklabels=None, legend_fontsize=None,
+                      legend_loc='best'):
+    """Apply the common time-series axis, label, and optional legend style."""
+    pretty_axes(ax, xlim=xlim, ylim=ylim, xticks=xticks)
+    if xticklabels is not None:
+        ax.set_xticklabels(xticklabels)
+    ax.set_ylabel(ylabel, fontweight='bold', fontsize=FONT_SIZE_LABEL)
+    if legend_fontsize is not None:
+        ax.legend(loc=legend_loc, fontsize=legend_fontsize)
+
+
 def _draw_heatmap(ax, data_2d, y_labels, x_range, cmap,
                   vmin=0.0, vmax=1.0, xticks=None, xlim=None,
                   xlabel='Trial', ylabel='State',
                   show_xlabel=True, show_xticklabels=True):
-    """Draw a heatmap where y = category, x = time.
-
-    Parameters
-    ----------
-    data_2d : ndarray, shape (n_rows, n_cols)
-        Rows map to ``y_labels``; columns map to time (trials).
-    x_range : (x_min, x_max)
-        Range for the imshow extent (data coordinates).
-    cmap : str or Colormap
-        Colormap for the heatmap.
-    show_xlabel, show_xticklabels : bool
-        In vertically stacked heatmaps, pass False on non-bottom
-        subplots so only the bottom subplot carries the x-axis
-        label and tick numbers (matching the time-series style).
-    """
-    n_rows, n_cols = data_2d.shape
+    """Draw a heatmap where rows are categories and columns are trials."""
+    n_rows = data_2d.shape[0]
     extent = (x_range[0], x_range[1], 0.5, n_rows + 0.5)
     im = ax.imshow(data_2d, aspect='auto', origin='lower', extent=extent,
                    cmap=cmap, vmin=vmin, vmax=vmax, interpolation='nearest')
     ax.set_yticks(np.arange(1, n_rows + 1))
     ax.set_yticklabels(y_labels)
-    # pretty_axes hides the top/right spines and applies the shared
-    # 14pt tick-label size. Passing None leaves imshow's extent (and
-    # therefore ylim/xlim) untouched where we don't want to override.
     pretty_axes(ax, xlim=xlim, xticks=xticks)
     ax.set_ylabel(ylabel, fontweight='bold', fontsize=FONT_SIZE_LABEL)
     if show_xlabel:
@@ -112,6 +107,168 @@ def _draw_heatmap(ax, data_2d, y_labels, x_range, cmap,
     if not show_xticklabels:
         ax.tick_params(labelbottom=False)
     return im
+
+
+def _draw_state_heatmap(ax, lsb, n_states, cmap, *, xticks=None, xlim=None,
+                        split_at=None, gap_width=20, xticklabels=None,
+                        xlabel='Trial', ylabel='State',
+                        show_xlabel=True, show_xticklabels=True):
+    """Draw posterior beliefs for the first ``n_states`` latent states.
+
+    ``lsb`` includes the pre-trial row at index zero; that row is omitted.
+    When ``split_at`` is supplied, the trial axis is broken after that trial
+    and the remaining trials are shifted right by ``gap_width``.
+    """
+    data = lsb[1:, :n_states].T
+    y_labels = [str(i) for i in range(1, n_states + 1)]
+
+    if split_at is None:
+        im = _draw_heatmap(
+            ax, data, y_labels, (0.5, data.shape[1] + 0.5), cmap,
+            xticks=xticks, xlim=xlim, xlabel=xlabel, ylabel=ylabel,
+            show_xlabel=show_xlabel,
+            show_xticklabels=show_xticklabels,
+        )
+    else:
+        left = data[:, :split_at]
+        right = data[:, split_at:]
+        y_extent = (0.5, n_states + 0.5)
+        im = ax.imshow(
+            left, aspect='auto', origin='lower',
+            extent=(0.5, split_at + 0.5, *y_extent),
+            cmap=cmap, vmin=0.0, vmax=1.0, interpolation='nearest',
+        )
+        if right.shape[1]:
+            right_start = split_at + gap_width + 0.5
+            ax.imshow(
+                right, aspect='auto', origin='lower',
+                extent=(right_start, right_start + right.shape[1], *y_extent),
+                cmap=cmap, vmin=0.0, vmax=1.0, interpolation='nearest',
+            )
+        ax.set_yticks(np.arange(1, n_states + 1))
+        ax.set_yticklabels(y_labels)
+        pretty_axes(ax, xlim=xlim, xticks=xticks)
+        ax.set_ylabel(ylabel, fontweight='bold', fontsize=FONT_SIZE_LABEL)
+        if show_xlabel:
+            ax.set_xlabel(xlabel, fontweight='bold', fontsize=FONT_SIZE_LABEL)
+        if not show_xticklabels:
+            ax.tick_params(labelbottom=False)
+        if xticklabels is not None and show_xticklabels:
+            ax.set_xticklabels(xticklabels)
+    return im
+
+
+def _plot_state_heatmap_stack(lsb_list, labels, colors, output_path, *,
+                              cmap=None, xticks=None, xlim=None,
+                              split_at=None, gap_width=20,
+                              xticklabels=None, ylabel='State',
+                              fig_width=8, row_height=0.8):
+    """Render a stack of comparable latent-state posterior heatmaps.
+
+    Missing cases can be represented by ``None`` in ``lsb_list``; their
+    subplot is hidden while the remaining cases retain their original order.
+    """
+    valid_arrays = [lsb for lsb in lsb_list if lsb is not None]
+    if not valid_arrays:
+        return None
+
+    n_states = _used_states(valid_arrays)
+    n_panels = len(lsb_list)
+    fig, axes = plt.subplots(
+        n_panels, 1,
+        figsize=(fig_width, row_height * n_states * n_panels + 1),
+        squeeze=False,
+    )
+    visible_indices = [i for i, lsb in enumerate(lsb_list) if lsb is not None]
+    bottom_index = visible_indices[-1]
+
+    for i, (ax, lsb, label, color) in enumerate(
+        zip(axes[:, 0], lsb_list, labels, colors)
+    ):
+        if lsb is None:
+            ax.set_visible(False)
+            continue
+        panel_cmap = cmap if cmap is not None else _sequential_cmap(color)
+        im = _draw_state_heatmap(
+            ax, lsb, n_states, panel_cmap,
+            xticks=xticks, xlim=xlim,
+            split_at=split_at, gap_width=gap_width,
+            xticklabels=xticklabels,
+            ylabel=ylabel,
+            show_xlabel=(i == bottom_index),
+            show_xticklabels=(i == bottom_index),
+        )
+        _add_case_legend(ax, label, color)
+        _style_colorbar(fig.colorbar(im, ax=ax), label='Belief')
+
+    fig.tight_layout()
+    save(fig, output_path)
+    return fig
+
+
+# Spontaneous-recovery plots use the same visual trial-axis break.
+RECOVERY_BREAK_TRIAL = 40
+RECOVERY_GAP_WIDTH = 20
+RECOVERY_XTICKS = [0, 20, 40, 60, 70]
+RECOVERY_XTICK_LABELS = ['0', '20', '40', '0', '10']
+
+
+def _broken_trial_coordinates(ntrials, break_trial=RECOVERY_BREAK_TRIAL,
+                              gap_width=RECOVERY_GAP_WIDTH):
+    """Return x-coordinates for the two visible portions of a broken axis."""
+    x_left = np.arange(1, break_trial + 1)
+    x_right = gap_width + np.arange(break_trial + 1, ntrials + 1)
+    return x_left, x_right
+
+
+def _plot_broken_series(ax, values, *, color, linestyle='-', label=None,
+                        break_trial=RECOVERY_BREAK_TRIAL,
+                        gap_width=RECOVERY_GAP_WIDTH, mark_endpoints=True):
+    """Plot trial-indexed values on the two sides of a visual time gap."""
+    values = np.asarray(values)
+    x_left, x_right = _broken_trial_coordinates(
+        len(values), break_trial=break_trial, gap_width=gap_width,
+    )
+    ax.plot(x_left, values[:break_trial], color=color, linewidth=LINE_W,
+            alpha=LINE_ALPHA, linestyle=linestyle, label=label)
+    ax.plot(x_right, values[break_trial:], color=color, linewidth=LINE_W,
+            alpha=LINE_ALPHA, linestyle=linestyle)
+    if mark_endpoints and len(values) > break_trial:
+        marker_style = dict(color=color, markersize=12, markeredgewidth=3,
+                            alpha=LINE_ALPHA)
+        ax.plot(break_trial, values[break_trial - 1], 'x', **marker_style)
+        ax.plot(break_trial + gap_width + 1, values[break_trial], 'x',
+                **marker_style)
+    return x_left, x_right
+
+
+def _format_broken_axis(ax, ylabel, *, xticks=None, xticklabels=None,
+                        xlim=(0, 71), ylim=None, legend_fontsize=12):
+    """Apply consistent labels and trial ticks to a broken-axis plot."""
+    ax.set_xticks(RECOVERY_XTICKS if xticks is None else xticks)
+    ax.set_xticklabels(RECOVERY_XTICK_LABELS if xticklabels is None
+                       else xticklabels)
+    ax.set_xlim(xlim)
+    if ylim is not None:
+        ax.set_ylim(ylim)
+    ax.set_ylabel(ylabel, fontweight='bold', fontsize=FONT_SIZE_LABEL)
+    if legend_fontsize is not None:
+        ax.legend(loc='best', fontsize=legend_fontsize)
+
+
+def _plot_retrieval_test_segments(ax, values, *, color, linestyle, label,
+                                  ntrials, acq_end, retr, test):
+    """Plot acquisition/extinction trajectories and retrieval/test markers."""
+    values = np.asarray(values)
+    ax.plot(range(1, acq_end + 1), values[:acq_end],
+            linestyle, color=color, linewidth=LINE_W, alpha=LINE_ALPHA,
+            label=label)
+    ax.plot(retr, values[retr - 1], 'x', color=color,
+            markersize=12, markeredgewidth=3, alpha=LINE_ALPHA)
+    ax.plot(range(retr + 1, ntrials), values[retr:ntrials - 1],
+            linestyle, color=color, linewidth=LINE_W, alpha=LINE_ALPHA)
+    ax.plot(test, values[ntrials - 1], 'x', color=color,
+            markersize=12, markeredgewidth=3, alpha=LINE_ALPHA)
 
 
 # =============================================================================
@@ -137,13 +294,11 @@ def plot_associative_strength(results, model_name, cases_pair, pair_idx,
     margin = 0.05 * max(ymax - ymin, 1e-6)
 
     ntrials = results['MU'][(model_name, cases_pair[0])]['mean'].shape[0]
-    pretty_axes(ax,
-                xlim=(0.5, ntrials + 0.5),
-                ylim=(ymin - margin, ymax + margin),
-                xticks=xticks)
-    ax.set_ylabel('Associative strength',
-                  fontweight='bold', fontsize=FONT_SIZE_LABEL)
-    ax.legend(loc='best', fontsize=FONT_SIZE_LABEL * .7)
+    _format_line_plot(ax, 'Associative strength',
+                      xlim=(0.5, ntrials + 0.5),
+                      ylim=(ymin - margin, ymax + margin),
+                      xticks=xticks,
+                      legend_fontsize=FONT_SIZE_LABEL * .7)
 
     save(fig, out_dir / f'AssociativeStrength_{short_name}{pair_idx}.png')
 
@@ -151,66 +306,41 @@ def plot_associative_strength(results, model_name, cases_pair, pair_idx,
 def plot_beliefs(results, model_name, cases_pair, pair_idx,
                  short_name, out_dir, xticks, ylim=(-0.1, 1.1),
                  heatmap=False, cmap=None):
-    """Belief time series for the most-active latent state, per case.
+    """Plot the dominant-state belief trajectory for each case.
 
-    y-limits default to (-0.1, 1.1): a small margin below 0 and above 1
-    so beliefs that saturate at the probability boundaries remain
-    visually distinguishable from the axis edges. Pass ``ylim`` to
-    override.
+    The dominant state is selected independently for each case by its
+    highest mean belief. This mirrors the MATLAB implementation, which
+    sorts the LSB columns separately per condition; the selected latent
+    state can therefore differ across cases.
 
-    Note: MATLAB sorts LSB *per case* by its own mean, which can pick
-    different latent-state indices for each condition. That's why we
-    compute ``dominant`` inside the loop.
-
-    When ``heatmap=True``, produces an additional vertically stacked
-    figure showing *all* used latent states per case (y=state, x=trial,
-    color=belief). Each subplot's colormap is a white→case-color gradient
-    matching the paired line plot. Pass ``cmap`` to override with a single
-    fixed colormap for all subplots. Saved as
-    ``Beliefs_{short_name}{pair_idx}_heatmap.png``.
+    With ``heatmap=True``, render all used states as stacked posterior
+    heatmaps instead of the dominant-state line plot.
     """
     if heatmap:
-        lsb_list = [results['LSB'][(model_name, c)]['mean']
-                    for c in cases_pair]
-        L_used = _used_states(lsb_list)
-        n_cases = len(cases_pair)
-        fig, axes = plt.subplots(n_cases, 1,
-                                  figsize=(8, 0.8 * L_used * n_cases + 1),
-                                  squeeze=False)
-        case_colors = [COLOR_PARTIAL, COLOR_CONTINUOUS]
-        for i, (case, lsb) in enumerate(zip(cases_pair, lsb_list)):
-            ax = axes[i, 0]
-            T = lsb.shape[0] - 1
-            data = lsb[1:, :L_used].T          # (L_used, T)
-            y_labels = [str(l) for l in range(1, L_used + 1)]
-            sub_cmap = cmap if cmap is not None else _sequential_cmap(case_colors[i])
-            is_bottom = (i == n_cases - 1)
-            im = _draw_heatmap(ax, data, y_labels, (0.5, T + 0.5),
-                               cmap=sub_cmap, xticks=xticks,
-                               show_xlabel=is_bottom,
-                               show_xticklabels=is_bottom)
-            _add_case_legend(ax, f'Case {case}', case_colors[i])
-            _style_colorbar(fig.colorbar(im, ax=ax), label='Belief')
-        fig.tight_layout()
-        save(fig, out_dir / f'Beliefs_{short_name}{pair_idx}_heatmap.png')
+        lsb_list = [results['LSB'][(model_name, case)]['mean']
+                    for case in cases_pair]
+        _plot_state_heatmap_stack(
+            lsb_list, [f'Case {case}' for case in cases_pair],
+            [COLOR_PARTIAL, COLOR_CONTINUOUS],
+            out_dir / f'Beliefs_{short_name}{pair_idx}_heatmap.png',
+            cmap=cmap, xticks=xticks, ylabel='State', fig_width=8,
+        )
         return
 
     fig, ax = styled_figure()
-
     for i, (case, color) in enumerate(
         zip(cases_pair, [COLOR_PARTIAL, COLOR_CONTINUOUS])
     ):
-        lsb = results['LSB'][(model_name, case)]['mean']    # (T+1, L*ncop)
+        lsb = results['LSB'][(model_name, case)]['mean']
         dominant = int(np.argmax(lsb.mean(axis=0)))
         ax.plot(lsb[:, dominant], linestyle=_ls(i), color=color,
                 linewidth=LINE_W, alpha=LINE_ALPHA,
                 label=f'Case {case} (state {dominant + 1})')
 
     ntrials = results['MU'][(model_name, cases_pair[0])]['mean'].shape[0]
-    pretty_axes(ax, xlim=(0.5, ntrials + 0.5), ylim=ylim, xticks=xticks)
-    ax.set_ylabel('Beliefs', fontweight='bold', fontsize=FONT_SIZE_LABEL)
-    ax.legend(loc='best', fontsize=FONT_SIZE_LABEL * .7)
-
+    _format_line_plot(ax, 'Beliefs', xlim=(0.5, ntrials + 0.5),
+                      ylim=ylim, xticks=xticks,
+                      legend_fontsize=FONT_SIZE_LABEL * .7)
     save(fig, out_dir / f'Beliefs_{short_name}{pair_idx}.png')
 
 
@@ -238,8 +368,8 @@ def plot_sampled_belief(results, model_name, cases_pair, pair_idx,
     was a bug. This version plots ``results['XT'][(model_name, case)]``
     for each case, so the two lines genuinely come from two conditions.
 
-    When ``heatmap=True``, produces an additional figure showing the
-    sampled state as a (case × trial) strip heatmap, saved as
+    When ``heatmap=True``, renders a (case × trial) strip heatmap instead of
+    the line plot, saved as
     ``Sampled_belief_{short_name}{pair_idx}_heatmap.png``. Sampled-state
     strips are categorical (state id, not probability), so a continuous
     probability colormap does not apply; ``viridis`` (or ``cmap``) is used.
@@ -298,10 +428,9 @@ def plot_sampled_belief(results, model_name, cases_pair, pair_idx,
             ylim = (max(0.5, data_min - 0.5), data_max + 0.5)
 
     ntrials = results['MU'][(model_name, cases_pair[0])]['mean'].shape[0]
-    pretty_axes(ax, xlim=(0.5, ntrials + 0.5), ylim=ylim, xticks=xticks)
-    ax.set_ylabel('Sampled belief',
-                  fontweight='bold', fontsize=FONT_SIZE_LABEL)
-    ax.legend(loc='best', fontsize=11)
+    _format_line_plot(ax, 'Sampled belief',
+                      xlim=(0.5, ntrials + 0.5), ylim=ylim, xticks=xticks,
+                      legend_fontsize=11)
 
     save(fig, out_dir / f'Sampled_belief_{short_name}{pair_idx}.png')
 
@@ -335,9 +464,8 @@ def plot_expectations(results, model_name, cases_pair, short_name,
         ylim = (data_min - margin, data_max + margin)
 
     ntrials = results['MU'][(model_name, cases_pair[0])]['mean'].shape[0]
-    pretty_axes(ax, xlim=(0.5, ntrials + 0.5), ylim=ylim, xticks=xticks)
-    ax.set_ylabel(ylabel, fontweight='bold', fontsize=FONT_SIZE_LABEL)
-    ax.legend(loc='best', fontsize=12)
+    _format_line_plot(ax, ylabel, xlim=(0.5, ntrials + 0.5),
+                      ylim=ylim, xticks=xticks, legend_fontsize=12)
 
     save(fig, out_dir / f'Expectations_Renewal_{short_name}.png')
 
@@ -377,10 +505,9 @@ def plot_associative_strength_per_cue(results, task_name, model_name,
         margin = 0.05 * max(data_max - data_min, 1e-6)
         ylim = (data_min - margin, data_max + margin)
 
-    pretty_axes(ax, xlim=xlim, ylim=ylim, xticks=xticks)
-    ax.set_ylabel('Associative strength',
-                  fontweight='bold', fontsize=FONT_SIZE_LABEL)
-    ax.legend(loc='best', fontsize=FONT_SIZE_LABEL * .7)
+    _format_line_plot(ax, 'Associative strength', xlim=xlim, ylim=ylim,
+                      xticks=xticks,
+                      legend_fontsize=FONT_SIZE_LABEL * .7)
 
     # out_dir is already per-task; filename omits the task name.
     save(fig, out_dir / f'AssociativeStrength_{short_name}.png')
@@ -390,71 +517,29 @@ def plot_associative_strength_per_cue(results, task_name, model_name,
 # Spontaneous-recovery family (broken axis)
 # =============================================================================
 
-def _setup_broken_axis(ax, ntrials, gap_visual=20):
-    """X-axis layout used by spontaneous-recovery plots.
-
-    Left half: trials 1..40 at x=1..40.
-    Right half: trials 41..ntrials at x=(40+gap_visual+1)..(40+gap_visual+ntrials-40).
-    The gap is purely visual — it represents the silent delay, not
-    actual trials — and is separated by a white-out on the y=0 line.
-    """
-    x_break = 40
-    x_offset = gap_visual
-    x_left  = np.arange(1, x_break + 1)
-    x_right = x_offset + np.arange(x_break + 1, ntrials + 1)
-    return x_left, x_right, x_break, x_offset
-
-
 def plot_spontaneous_recovery_expectations(results, model_name, cases,
                                             case_labels, short_name, out_dir,
                                             xticks=None, ylim=None,
                                             case_colors=None):
-    """Expected reward (MU) over trials, broken-axis, one line per case."""
+    """Expected reward (MU) over trials, with a visual break for the delay."""
     if case_colors is None:
         case_colors = [COLOR_PARTIAL, COLOR_CONTINUOUS]
 
     fig, ax = styled_figure()
-
     for i, (case, label, color) in enumerate(
         zip(cases, case_labels, case_colors)
     ):
         key = (model_name, case)
         if key not in results['MU']:
             continue
-        mu = results['MU'][key]['mean']    # (T, D*A)
-        ntrials = mu.shape[0]
-        ls = _ls(i)
+        mu = results['MU'][key]['mean']
+        _plot_broken_series(ax, mu[:, 0], color=color, linestyle=_ls(i),
+                            label=label)
 
-        x_left, x_right, x_break, x_offset = _setup_broken_axis(ax, ntrials)
-
-        # Left half: acquisition + extinction
-        ax.plot(x_left, mu[:x_break, 0], color=color, linewidth=LINE_W,
-                alpha=LINE_ALPHA, linestyle=ls, label=label)
-        # Right half: renewal (no label — same series continues)
-        ax.plot(x_right, mu[x_break:, 0], color=color, linewidth=LINE_W,
-                alpha=LINE_ALPHA, linestyle=ls)
-        # End-of-extinction and start-of-renewal markers
-        ax.plot(x_break, mu[x_break - 1, 0], 'x', color=color,
-                markersize=12, markeredgewidth=3, alpha=LINE_ALPHA)
-        ax.plot(x_break + x_offset + 1, mu[x_break, 0], 'x', color=color,
-                markersize=12, markeredgewidth=3, alpha=LINE_ALPHA)
-
-    # White rectangle hides the axis spine in the visual gap
-    ax.add_patch(Rectangle((40.2, -0.1), 19.6, 0.2,
-                           facecolor='white', edgecolor='white', zorder=3))
-
-    if xticks is None:
-        xticks = [0, 20, 40, 60, 70]
-    ax.set_xticks(xticks)
-    ax.set_xticklabels(['0', '20', '40', '0', '10'])
-    ax.set_xlim(0, 71)
-    if ylim is None:
-        ylim = (-0.55, 0.55)
-    ax.set_ylim(ylim)
-    ax.set_ylabel('Associative strength', fontweight='bold',
-                  fontsize=FONT_SIZE_LABEL)
-    ax.legend(loc='best', fontsize=12)
-
+    _format_broken_axis(ax, 'Associative strength', xticks=xticks,
+                        xlim=(0, 71),
+                        ylim=(-0.55, 0.55) if ylim is None else ylim,
+                        legend_fontsize=12)
     save(fig, out_dir / f'AS_SponRec_{short_name}.png')
 
 
@@ -462,109 +547,44 @@ def plot_spontaneous_recovery_beliefs(results, model_name, cases,
                                        case_labels, short_name, out_dir,
                                        xticks=None, case_colors=None,
                                        heatmap=False, cmap=None):
-    """Dominant-state belief over trials, broken-axis, one line per case.
+    """Dominant-state belief over trials, with a visual break for the delay.
 
-    When ``heatmap=True``, produces a vertically stacked heatmap variant
-    showing *all* used states per case, with the same visual gap between
-    extinction (trials 1–40) and renewal (trials 41–T) phases. Each
-    subplot's colormap is a white→case-color gradient matching the line
-    plot. Saved as ``Beliefs_SponRec_{short_name}_heatmap.png``.
+    With ``heatmap=True``, render all used states in stacked heatmaps using
+    the same broken trial axis.
     """
     if case_colors is None:
         case_colors = [COLOR_PARTIAL, COLOR_CONTINUOUS]
 
     if heatmap:
-        lsb_list = [results['LSB'][(model_name, c)]['mean']
-                    for c in cases if (model_name, c) in results['LSB']]
-        L_used = _used_states(lsb_list)
-        n_cases = len(cases)
-        fig, axes = plt.subplots(n_cases, 1,
-                                  figsize=(10, 0.8 * L_used * n_cases + 1),
-                                  squeeze=False)
-        for i, case in enumerate(cases):
-            ax = axes[i, 0]
-            key = (model_name, case)
-            if key not in results['LSB']:
-                ax.set_visible(False)
-                continue
-            lsb = results['LSB'][key]['mean']    # (T+1, L)
-            T = lsb.shape[0] - 1
-            data_full = lsb[1:, :L_used].T       # (L_used, T)
-            data_left  = data_full[:, :40]
-            data_right = data_full[:, 40:]
-
-            sub_cmap = cmap if cmap is not None else _sequential_cmap(case_colors[i])
-            im = ax.imshow(data_left, aspect='auto', origin='lower',
-                           extent=(0.5, 40.5, 0.5, L_used + 0.5),
-                           cmap=sub_cmap, vmin=0.0, vmax=1.0,
-                           interpolation='nearest')
-            ax.imshow(data_right, aspect='auto', origin='lower',
-                      extent=(60.5, 60.5 + data_right.shape[1],
-                              0.5, L_used + 0.5),
-                      cmap=sub_cmap, vmin=0.0, vmax=1.0,
-                      interpolation='nearest')
-            ax.set_yticks(np.arange(1, L_used + 1))
-            ax.set_yticklabels([str(l) for l in range(1, L_used + 1)])
-            pretty_axes(ax, xlim=(0, 71), ylim=(0.5, L_used + 0.5),
-                        xticks=[0, 20, 40, 60, 70])
-            ax.set_xticklabels(['0', '20', '40', '0', '10'])
-            ax.set_ylabel('Latent state', fontweight='bold',
-                          fontsize=FONT_SIZE_LABEL)
-            is_bottom = (i == n_cases - 1)
-            if is_bottom:
-                ax.set_xlabel('Trial', fontweight='bold',
-                              fontsize=FONT_SIZE_LABEL)
-            else:
-                ax.tick_params(labelbottom=False)
-            _add_case_legend(ax, case_labels[i], case_colors[i])
-            _style_colorbar(fig.colorbar(im, ax=ax), label='Belief')
-        fig.tight_layout()
-        save(fig, out_dir / f'Beliefs_SponRec_{short_name}_heatmap.png')
+        lsb_list = [results['LSB'].get((model_name, case), {}).get('mean')
+                    for case in cases]
+        _plot_state_heatmap_stack(
+            lsb_list, case_labels, case_colors,
+            out_dir / f'Beliefs_SponRec_{short_name}_heatmap.png',
+            cmap=cmap, xticks=RECOVERY_XTICKS, xlim=(0, 71),
+            split_at=RECOVERY_BREAK_TRIAL,
+            gap_width=RECOVERY_GAP_WIDTH,
+            xticklabels=RECOVERY_XTICK_LABELS,
+            ylabel='State', fig_width=10,
+        )
         return
 
     fig, ax = styled_figure()
-
     for i, (case, label, color) in enumerate(
         zip(cases, case_labels, case_colors)
     ):
         key = (model_name, case)
         if key not in results['LSB']:
             continue
-        lsb = results['LSB'][key]['mean']    # (T+1, L*ncop)
-        ntrials = lsb.shape[0] - 1
-
-        # Dominant state per case, chosen by maximum mean belief
+        lsb = results['LSB'][key]['mean']
         dominant = int(np.argmax(lsb.mean(axis=0)))
-        ls = _ls(i)
+        _plot_broken_series(
+            ax, lsb[1:, dominant], color=color, linestyle=_ls(i),
+            label=f'{label} (state {dominant + 1})',
+        )
 
-        x_left, x_right, x_break, x_offset = _setup_broken_axis(ax, ntrials)
-
-        # lsb[0] is pre-trial init; lsb[t] is belief after trial t
-        ax.plot(x_left, lsb[1:x_break + 1, dominant],
-                color=color, linewidth=LINE_W, alpha=LINE_ALPHA,
-                linestyle=ls, label=f'{label} (state {dominant + 1})')
-        ax.plot(x_right, lsb[x_break + 1:, dominant],
-                color=color, linewidth=LINE_W, alpha=LINE_ALPHA,
-                linestyle=ls)
-        ax.plot(x_break, lsb[x_break, dominant], 'x',
-                color=color, markersize=12, markeredgewidth=3,
-                alpha=LINE_ALPHA)
-        ax.plot(x_break + x_offset + 1, lsb[x_break + 1, dominant], 'x',
-                color=color, markersize=12, markeredgewidth=3,
-                alpha=LINE_ALPHA)
-
-    ax.add_patch(Rectangle((40.2, -0.1), 19.6, 0.2,
-                           facecolor='white', edgecolor='white', zorder=3))
-
-    if xticks is None:
-        xticks = [0, 20, 40, 60, 70]
-    ax.set_xticks(xticks)
-    ax.set_xticklabels(['0', '20', '40', '0', '10'])
-    ax.set_xlim(0, 82)
-    ax.set_ylim(-0.1, 1.1)
-    ax.set_ylabel('Beliefs', fontweight='bold', fontsize=FONT_SIZE_LABEL)
-    ax.legend(loc='best', fontsize=12)
-
+    _format_broken_axis(ax, 'Beliefs', xticks=xticks, xlim=(0, 82),
+                        ylim=(-0.1, 1.1), legend_fontsize=12)
     save(fig, out_dir / f'Beliefs_SponRec_{short_name}.png')
 
 
@@ -595,27 +615,14 @@ def plot_spontaneous_recovery_dilution(results, model_name, cases,
                                         xticks=None, case_colors=None,
                                         case_linestyles=None,
                                         heatmap=False, cmap=None):
-    """Belief in State 1 through the delay, with an analytic decay curve
-    bridging the silent gap.
+    """Belief in one state through the delay, including analytic decay.
 
-    Each case gets a distinct linestyle (solid for the first, dashed for
-    the second, etc.) applied end-to-end, including the gap segment, so
-    each case remains traceable across the whole plot.
-
-    Parameters
-    ----------
-    gamma : float
-        LatentState transition probability (par['ls']['gamma']).
-    state_idx : int
-        Which state to plot. Default 0 = State 1 = acquisition state.
-    case_linestyles : list of str, optional
-        One linestyle per case. Defaults to the LINESTYLES progression
-        (solid, dashed, dash-dot, ...) sliced to len(cases).
-
-    When ``heatmap=True``, produces a vertically stacked heatmap variant
-    showing *all* used states per case with the same broken axis. Each
-    subplot uses a white→case-color gradient. Saved as
-    ``BeliefDilution_SponRec_{short_name}_heatmap.png``.
+    ``gamma`` is the LatentState transition probability. The silent interval
+    contains ``case - 1`` transitions; its posterior trajectory is computed
+    analytically and drawn across the visual gap. ``state_idx`` selects the
+    state to display, and ``case_linestyles`` can override the linestyle
+    progression. With ``heatmap=True``, render all used states in stacked
+    broken-axis heatmaps instead of the line plot.
     """
     if case_colors is None:
         case_colors = [COLOR_PARTIAL, COLOR_CONTINUOUS]
@@ -623,121 +630,67 @@ def plot_spontaneous_recovery_dilution(results, model_name, cases,
         case_linestyles = [_ls(i) for i in range(len(cases))]
 
     if heatmap:
-        lsb_list = [results['LSB'][(model_name, c)]['mean']
-                    for c in cases if (model_name, c) in results['LSB']]
-        L_used = _used_states(lsb_list)
-        n_cases = len(cases)
-        fig, axes = plt.subplots(n_cases, 1,
-                                  figsize=(10, 0.8 * L_used * n_cases + 1),
-                                  squeeze=False)
-        for i, case in enumerate(cases):
-            ax = axes[i, 0]
-            key = (model_name, case)
-            if key not in results['LSB']:
-                ax.set_visible(False)
-                continue
-            lsb = results['LSB'][key]['mean']    # (T+1, L)
-            T = lsb.shape[0] - 1
-            data_full = lsb[1:, :L_used].T       # (L_used, T)
-            data_left  = data_full[:, :40]
-            data_right = data_full[:, 40:]
-
-            sub_cmap = cmap if cmap is not None else _sequential_cmap(case_colors[i])
-            im = ax.imshow(data_left, aspect='auto', origin='lower',
-                           extent=(0.5, 40.5, 0.5, L_used + 0.5),
-                           cmap=sub_cmap, vmin=0.0, vmax=1.0,
-                           interpolation='nearest')
-            ax.imshow(data_right, aspect='auto', origin='lower',
-                      extent=(60.5, 60.5 + data_right.shape[1],
-                              0.5, L_used + 0.5),
-                      cmap=sub_cmap, vmin=0.0, vmax=1.0,
-                      interpolation='nearest')
-            ax.set_yticks(np.arange(1, L_used + 1))
-            ax.set_yticklabels([str(l) for l in range(1, L_used + 1)])
-            pretty_axes(ax, xlim=(0, 71), ylim=(0.5, L_used + 0.5),
-                        xticks=[0, 20, 40, 60, 70])
-            ax.set_xticklabels(['0', '20', '40', '0', '10'])
-            ax.set_ylabel('Latent state', fontweight='bold',
-                          fontsize=FONT_SIZE_LABEL)
-            is_bottom = (i == n_cases - 1)
-            if is_bottom:
-                ax.set_xlabel('Trial', fontweight='bold',
-                              fontsize=FONT_SIZE_LABEL)
-            else:
-                ax.tick_params(labelbottom=False)
-            _add_case_legend(ax, case_labels[i], case_colors[i])
-            _style_colorbar(fig.colorbar(im, ax=ax), label='Belief')
-        fig.tight_layout()
-        save(fig, out_dir
-             / f'BeliefDilution_SponRec_{short_name}_heatmap.png')
+        lsb_list = [results['LSB'].get((model_name, case), {}).get('mean')
+                    for case in cases]
+        _plot_state_heatmap_stack(
+            lsb_list, case_labels, case_colors,
+            out_dir / f'BeliefDilution_SponRec_{short_name}_heatmap.png',
+            cmap=cmap, xticks=RECOVERY_XTICKS, xlim=(0, 71),
+            split_at=RECOVERY_BREAK_TRIAL,
+            gap_width=RECOVERY_GAP_WIDTH,
+            xticklabels=RECOVERY_XTICK_LABELS,
+            ylabel='State', fig_width=10,
+        )
         return
 
     fig, ax = styled_figure()
+    break_trial = RECOVERY_BREAK_TRIAL
+    gap_width = RECOVERY_GAP_WIDTH
 
-    for case, label, color, ls in zip(cases, case_labels,
-                                      case_colors, case_linestyles):
+    for case, label, color, linestyle in zip(
+        cases, case_labels, case_colors, case_linestyles
+    ):
         key = (model_name, case)
         if key not in results['LSB']:
             continue
         lsb = results['LSB'][key]['mean']
-        ntrials = lsb.shape[0] - 1
         n_silent = case - 1
-
-        lsb_end_ext = lsb[40, :]
+        lsb_end_ext = lsb[break_trial, :]
         n_active_case = max(1, int(np.sum(lsb_end_ext > 1e-10)))
 
-        # --- Left half: acquisition + extinction, posterior per trial ---
-        x_left = np.arange(1, 41)
-        ax.plot(x_left, lsb[1:41, state_idx], color=color,
-                linestyle=ls, linewidth=LINE_W, alpha=LINE_ALPHA,
-                label=label)
+        values = lsb[1:, state_idx]
+        _plot_broken_series(
+            ax, values, color=color, linestyle=linestyle, label=label,
+            mark_endpoints=False,
+        )
 
-        # --- Right half: renewal, posterior per trial ---
-        x_offset = 20
-        x_right = x_offset + np.arange(41, ntrials + 1)
-        ax.plot(x_right, lsb[41:, state_idx], color=color,
-                linestyle=ls, linewidth=LINE_W, alpha=LINE_ALPHA)
-
-        # --- Gap: analytic exponential decay from posterior-40 to prior-41 ---
-        # Same linestyle as the surrounding curve, so the case remains
-        # traceable end-to-end.
+        # Analytic posterior evolution during the silent interval.
         if n_silent > 0:
             tau = np.linspace(0, n_silent, 200)
             prob_stay_tau = (1 - gamma) ** tau
             target = 1.0 / n_active_case
             belief_tau = (lsb_end_ext[state_idx] * prob_stay_tau
                           + (1 - prob_stay_tau) * target)
-            x_gap = 40 + x_offset * tau / n_silent
-            ax.plot(x_gap, belief_tau, color=color,
-                    linestyle=ls, linewidth=LINE_W, alpha=LINE_ALPHA)
-
-        # --- Endpoint markers ---
-        ax.plot(40, lsb[40, state_idx], 'x', color=color,
-                markersize=12, markeredgewidth=3, alpha=LINE_ALPHA)
-        if n_silent > 0:
+            x_gap = break_trial + gap_width * tau / n_silent
+            ax.plot(x_gap, belief_tau, color=color, linestyle=linestyle,
+                    linewidth=LINE_W, alpha=LINE_ALPHA)
             prior_41 = _context_shift_belief(
                 lsb_end_ext, gamma, n_silent, n_active_case,
             )[state_idx]
         else:
-            prior_41 = lsb[40, state_idx]
-        ax.plot(40 + x_offset + 1, prior_41, 'x', color=color,
-                markersize=12, markeredgewidth=3, alpha=LINE_ALPHA)
+            prior_41 = lsb_end_ext[state_idx]
 
-    # Visual gap
-    ax.add_patch(Rectangle((40.2, -0.1), 19.6, 0.2,
-                           facecolor='white', edgecolor='white', zorder=3))
+        marker_style = dict(color=color, markersize=12,
+                            markeredgewidth=3, alpha=LINE_ALPHA)
+        ax.plot(break_trial, lsb_end_ext[state_idx], 'x', **marker_style)
+        ax.plot(break_trial + gap_width + 1, prior_41, 'x', **marker_style)
 
-    if xticks is None:
-        xticks = [0, 20, 40, 60, 70]
-    ax.set_xticks(xticks)
-    ax.set_xticklabels(['0', '20', '40', '0', '10'])
-    ax.set_xlim(0, 71)
-    ax.set_ylim(-0.1, 1.1)
-    ax.set_ylabel(f'Belief in State {state_idx + 1}',
-                  fontweight='bold', fontsize=FONT_SIZE_LABEL)
-    ax.set_title('Belief dilution during silent delay', fontsize=FONT_SIZE_LABEL)
-    ax.legend(loc='best', fontsize=12)
-
+    _format_broken_axis(
+        ax, f'Belief in State {state_idx + 1}', xticks=xticks,
+        xlim=(0, 71), ylim=(-0.1, 1.1), legend_fontsize=12,
+    )
+    ax.set_title('Belief dilution during silent delay',
+                 fontsize=FONT_SIZE_LABEL)
     save(fig, out_dir / f'BeliefDilution_SponRec_{short_name}.png')
 
 
@@ -824,10 +777,9 @@ def plot_cue_strength_zoomed(results, model_name, cases, case_labels,
                 linewidth=LINE_W, alpha=LINE_ALPHA, linestyle=_ls(i),
                 label=label)
 
-    pretty_axes(ax, xlim=xlim, ylim=ylim, xticks=xticks)
-    ax.set_ylabel('Associative strength',
-                  fontweight='bold', fontsize=FONT_SIZE_LABEL)
-    ax.legend(loc='best', fontsize=FONT_SIZE_LABEL * .7)
+    _format_line_plot(ax, 'Associative strength', xlim=xlim, ylim=ylim,
+                      xticks=xticks,
+                      legend_fontsize=FONT_SIZE_LABEL * .7)
 
     save(fig, out_dir / f'{filename_stem}_{short_name}.png')
 
@@ -835,87 +787,43 @@ def plot_cue_strength_zoomed(results, model_name, cases, case_labels,
 def plot_beliefs_top2(results, model_name, cases, case_labels,
                       short_name, out_dir, xlim, xticks, filename_stem,
                       ylim=(-0.1, 1.1), heatmap=False, cmap=None):
-    """Plot the top-2 dominant states per case, zoomed to xlim.
+    """Plot the two most active latent-state beliefs for each case.
 
-    For each case, plots the two states with the highest mean belief.
-    Each of the (case × rank) curves gets a distinct linestyle so all
-    four (or fewer) trajectories are distinguishable without relying on
-    color alone. Matches MATLAB's pattern in RunWilsonBoumphreyPearce.m,
-    where dominant-state indices often differ between groups and are
-    picked independently per case.
-
-    y-limits default to (-0.1, 1.1) — a small margin around the
-    probability range so beliefs that saturate at 0 or 1 remain visually
-    distinguishable from the axis edges. Pass ``ylim`` to override.
-
-    When ``heatmap=True``, produces a vertically stacked heatmap variant
-    showing *all* used states per case (zoomed to ``xlim``). Each
-    subplot's colormap is a white→case-color gradient matching the
-    paired line plot (order: continuous, partial — same as the line plot).
-    Saved as ``{filename_stem}_{short_name}_heatmap.png``.
+    State rankings are computed independently per case from mean belief.
+    Each case has its own color, while a global linestyle progression
+    distinguishes the state-rank trajectories. With ``heatmap=True``, show
+    all used states in stacked posterior heatmaps instead.
     """
+    case_colors = [COLOR_CONTINUOUS, COLOR_PARTIAL]
     if heatmap:
-        lsb_list = [results['LSB'][(model_name, c)]['mean']
-                    for c in cases if (model_name, c) in results['LSB']]
-        L_used = _used_states(lsb_list)
-        n_cases = len(cases)
-        case_colors = [COLOR_CONTINUOUS, COLOR_PARTIAL]
-        fig, axes = plt.subplots(n_cases, 1,
-                                  figsize=(8, 0.8 * L_used * n_cases + 1),
-                                  squeeze=False)
-        for i, case in enumerate(cases):
-            ax = axes[i, 0]
-            key = (model_name, case)
-            if key not in results['LSB']:
-                ax.set_visible(False)
-                continue
-            lsb = results['LSB'][key]['mean']    # (T+1, L)
-            T = lsb.shape[0] - 1
-            data = lsb[1:, :L_used].T            # (L_used, T)
-            y_labels = [str(l) for l in range(1, L_used + 1)]
-            sub_cmap = cmap if cmap is not None else _sequential_cmap(
-                case_colors[i % len(case_colors)]
-            )
-            is_bottom = (i == n_cases - 1)
-            im = _draw_heatmap(ax, data, y_labels, (0.5, T + 0.5),
-                               cmap=sub_cmap, xticks=xticks, xlim=xlim,
-                               show_xlabel=is_bottom,
-                               show_xticklabels=is_bottom)
-            _add_case_legend(ax, case_labels[i], case_colors[i % len(case_colors)])
-            _style_colorbar(fig.colorbar(im, ax=ax), label='Belief')
-        fig.tight_layout()
-        save(fig, out_dir / f'{filename_stem}_{short_name}_heatmap.png')
+        lsb_list = [results['LSB'].get((model_name, case), {}).get('mean')
+                    for case in cases]
+        _plot_state_heatmap_stack(
+            lsb_list, case_labels, case_colors,
+            out_dir / f'{filename_stem}_{short_name}_heatmap.png',
+            cmap=cmap, xticks=xticks, xlim=xlim,
+            ylabel='State', fig_width=8,
+        )
         return
 
     fig, ax = styled_figure()
-
     ls_counter = 0
-    for case, label, color in zip(
-        cases, case_labels, [COLOR_CONTINUOUS, COLOR_PARTIAL],
-    ):
+    for case, label, color in zip(cases, case_labels, case_colors):
         key = (model_name, case)
         if key not in results['LSB']:
             continue
-        lsb = results['LSB'][key]['mean']          # (T+1, L*ncop)
-        ntrials = lsb.shape[0] - 1
-        x = np.arange(1, ntrials + 2)              # 1..T+1 (incl. init)
-        means = lsb.mean(axis=0)
-        order = np.argsort(means)[::-1]
-
-        for rank in range(2):
-            if rank >= len(order):
-                break
-            state_idx = int(order[rank])
+        lsb = results['LSB'][key]['mean']
+        order = np.argsort(lsb.mean(axis=0))[::-1]
+        x = np.arange(1, lsb.shape[0] + 1)
+        for rank, state_idx in enumerate(order[:2]):
             ax.plot(x, lsb[:, state_idx], color=color,
                     linestyle=_ls(ls_counter), linewidth=LINE_W,
                     alpha=LINE_ALPHA,
                     label=f'{label}, state {rank + 1}')
             ls_counter += 1
 
-    pretty_axes(ax, xlim=xlim, ylim=ylim, xticks=xticks)
-    ax.set_ylabel('Beliefs', fontweight='bold', fontsize=FONT_SIZE_LABEL)
-    ax.legend(loc='best', fontsize=10)
-
+    _format_line_plot(ax, 'Beliefs', xlim=xlim, ylim=ylim, xticks=xticks,
+                      legend_fontsize=10)
     save(fig, out_dir / f'{filename_stem}_{short_name}.png')
 
 
@@ -1016,56 +924,39 @@ def plot_beliefs_compound_window(results, model_name, case,
                                   xticks=(495, 500, 505),
                                   shade_window=(501.5, 508.5),
                                   heatmap=False, cmap=None):
-    """Plot 3 states' belief curves across the compound training window.
+    """Plot selected latent-state beliefs across the compound training window.
 
-    Translation of MATLAB RunRescorla2000.m's second plot loop, with
-    two corrections to the MATLAB source:
+    The shaded region marks compound training. The heatmap variant shows all
+    used states; the line variant shows the requested state indices.
 
-    1. MATLAB's ``patch([501.5, 501.5, 0, 0]', ...)`` has degenerate
-       coordinates that don't form a sensible shaded region. We use
-       ``shade_window=(501.5, 508.5)``, which matches the compound
-       phase (trials 501–508) — the presumably-intended behavior.
-    2. MATLAB's inner ``j``-loop re-plots each state's curve twice,
-       which appears to be a copy-paste bug. This version plots each
-       state once.
-
-    Uses ``state_indices`` directly rather than "dominant" sorting,
-    since the Rescorla plot is specifically showing the trajectory of
-    the first three latent states.
-
-    y-limits are fixed to (-0.1, 1.1) — a small margin around the
-    probability range so beliefs that saturate at 0 or 1 remain
-    visually distinguishable from the axis edges.
-
-    When ``heatmap=True``, produces a heatmap showing *all* used states
-    zoomed to ``xlim``. The colormap is a white→COLOR_NEUTRAL gradient,
-    matching the line plot's single dark-neutral color for all states.
-    Saved as ``Beliefs_{model_label}_Case{case}_heatmap.png``.
+    This translates the second plot loop in ``RunRescorla2000.m`` with two
+    corrections: the original MATLAB patch has degenerate coordinates, so
+    ``shade_window`` marks trials 501–508; and a duplicated inner loop in the
+    MATLAB source is removed so each requested state is plotted once. The
+    explicitly requested state indices are used rather than sorting by
+    dominance because this plot tracks particular states.
     """
     key = (model_name, case)
     if key not in results['LSB']:
         return
 
-    lsb = results['LSB'][key]['mean']   # (T+1, L*ncop)
+    lsb = results['LSB'][key]['mean']
     n_states = lsb.shape[1]
+    output_stem = f'Beliefs_{model_label}_Case{case}'
 
     if heatmap:
-        L_used = _used_states([lsb])
-        T = lsb.shape[0] - 1
-        data = lsb[1:, :L_used].T       # (L_used, T)
-        y_labels = [str(l) for l in range(1, L_used + 1)]
-        sub_cmap = cmap if cmap is not None else _sequential_cmap(COLOR_NEUTRAL)
+        n_used = _used_states([lsb])
         fig, ax = plt.subplots(figsize=(6, 2.5))
-        im = _draw_heatmap(ax, data, y_labels, (0.5, T + 0.5),
-                           cmap=sub_cmap, xticks=xticks, xlim=xlim)
-        # Shaded compound window
+        panel_cmap = cmap if cmap is not None else _sequential_cmap(COLOR_NEUTRAL)
+        im = _draw_state_heatmap(
+            ax, lsb, n_used, panel_cmap, xticks=xticks, xlim=xlim,
+        )
         ax.axvspan(shade_window[0], shade_window[1],
                    facecolor=COLOR_SHADE, alpha=0.15,
                    edgecolor='none', zorder=2)
         _add_case_legend(ax, f'{model_label} — Case {case}', COLOR_NEUTRAL)
         _style_colorbar(fig.colorbar(im, ax=ax), label='Belief')
-        save(fig, out_dir
-             / f'Beliefs_{model_label}_Case{case}_heatmap.png')
+        save(fig, out_dir / f'{output_stem}_heatmap.png')
         return
 
     available = [i for i in state_indices if i < n_states]
@@ -1073,23 +964,19 @@ def plot_beliefs_compound_window(results, model_name, case,
         return
 
     fig, ax = styled_figure()
-
-    # Shaded compound window (trials 501-508)
     ax.axvspan(shade_window[0], shade_window[1],
-               facecolor=COLOR_SHADE, alpha=0.15, edgecolor='none', zorder=0)
-
-    # Belief curves — each state gets a distinct linestyle, all dark neutral
+               facecolor=COLOR_SHADE, alpha=0.15,
+               edgecolor='none', zorder=0)
+    x = np.arange(1, lsb.shape[0] + 1)
     for rank, state_idx in enumerate(available):
-        x = np.arange(1, lsb.shape[0] + 1)   # 1..T+1 (incl. init)
         ax.plot(x, lsb[:, state_idx], color=COLOR_NEUTRAL,
                 linestyle=_ls(rank), linewidth=LINE_W, alpha=LINE_ALPHA,
                 label=f'State {state_idx + 1}')
 
-    pretty_axes(ax, xlim=xlim, ylim=(-0.1, 1.1), xticks=xticks)
-    ax.set_ylabel('Beliefs', fontweight='bold', fontsize=FONT_SIZE_LABEL)
-    ax.legend(loc='best', fontsize=FONT_SIZE_LABEL * .7)
-
-    save(fig, out_dir / f'Beliefs_{model_label}_Case{case}.png')
+    _format_line_plot(ax, 'Beliefs', xlim=xlim, ylim=(-0.1, 1.1),
+                      xticks=xticks,
+                      legend_fontsize=FONT_SIZE_LABEL * .7)
+    save(fig, out_dir / f'{output_stem}.png')
 
 
 # =============================================================================
@@ -1145,48 +1032,24 @@ def plot_expectations_by_case(results, model_name, selected_cases,
                               case_colors, short_name, out_dir,
                               ntrials=24, acq_end=3, retr=4, test=24,
                               ylim=None, inset=False):
-    """MU trajectory over trials for selected cases, one line per case.
+    """MU trajectory with retrieval and test shown as separate markers.
 
-    Reproduces MATLAB's per-trial segmentation:
-
-        x=1..3   acquisition (line)
-        x=4      retrieval (marker, no line)
-        x=5..T-1 extinction (line)
-        x=T      test (marker, no line)
-
-    The gap between segments is intentional (visual emphasis on retrieval
-    and test as "moments" rather than a continuous trajectory). Each case
-    gets a distinct linestyle applied to both the line segments and the
-    marker strokes, so cases are distinguishable without relying on color.
-
-    Parameters
-    ----------
-    selected_cases : sequence of int
-        Case values to plot (e.g. [100, 5, 1]).
-    case_colors : dict mapping case → color.
-    inset : bool
-        If True, also produce a zoomed view of the test trial
-        (xlim=[T-0.5, T+0.5]) saved as a separate PNG.
+    Acquisition and extinction are drawn as separate line segments;
+    retrieval and test are isolated ``x`` markers. Each case receives a
+    distinct linestyle throughout both line segments. ``inset=True`` also
+    saves a separate zoom of the test-trial values.
     """
     fig, ax = styled_figure()
-
     for i, case in enumerate(selected_cases):
         key = (model_name, case)
         if key not in results['MU']:
             continue
-        mu = results['MU'][key]['mean'][:, 0]
-        color = case_colors[case]
-        ls = _ls(i)
-
-        ax.plot(range(1, acq_end + 1), mu[:acq_end],
-                '-', color=color, linewidth=LINE_W, alpha=LINE_ALPHA,
-                label=f'Case {case}')
-        ax.plot(retr, mu[retr - 1], 'x', color=color,
-                markersize=12, markeredgewidth=3, alpha=LINE_ALPHA)
-        ax.plot(range(retr + 1, ntrials), mu[retr:ntrials - 1],
-                ls, color=color, linewidth=LINE_W, alpha=LINE_ALPHA)
-        ax.plot(test, mu[ntrials - 1], 'x', color=color,
-                markersize=12, markeredgewidth=3, alpha=LINE_ALPHA)
+        values = results['MU'][key]['mean'][:, 0]
+        _plot_retrieval_test_segments(
+            ax, values, color=case_colors[case], linestyle=_ls(i),
+            label=f'Case {case}', ntrials=ntrials,
+            acq_end=acq_end, retr=retr, test=test,
+        )
 
     ax.set_xlim(0.5, ntrials + 0.5)
     ax.set_xticks([retr, test])
@@ -1199,7 +1062,6 @@ def plot_expectations_by_case(results, model_name, selected_cases,
     save(fig, out_dir / f'Expectations_{short_name}.png')
 
     if inset:
-        # Zoom to the test trial to show small differences.
         fig2, ax2 = styled_figure()
         for case in selected_cases:
             key = (model_name, case)
@@ -1219,77 +1081,40 @@ def plot_beliefs_by_case(results, model_name, selected_cases,
                          state_idx=0, ntrials=24, acq_end=3, retr=4,
                          test=24, ylim=(-0.1, 1.1),
                          heatmap=False, cmap=None):
-    """Belief in a single state over trials, one line per case.
+    """Plot one state's belief through acquisition, retrieval, and test.
 
-    Same segment structure and per-case linestyle progression as
-    plot_expectations_by_case. State 1 (state_idx=0) is the acquisition
-    state — the state whose belief dilution and reformation carries the
-    memory-modification signal.
-
-    y-limits default to (-0.1, 1.1) — a small margin around the
-    probability range so beliefs that saturate at 0 or 1 remain visually
-    distinguishable from the axis edges. Pass ``ylim`` to override.
-
-    When ``heatmap=True``, produces a vertically stacked heatmap variant
-    showing *all* used states per case. Each subplot's colormap is a
-    white→case-color gradient matching the case's line color. Saved as
-    ``Beliefs_{short_name}_heatmap.png``.
+    Belief arrays contain a pre-trial initial row, so ``lsb[1:]`` is used
+    to align the values with trial numbers. Acquisition and extinction are
+    separate line segments, with retrieval and test marked independently.
+    State 1 is the default because it represents the acquisition state in
+    the memory-modification task. With ``heatmap=True``, show all used
+    latent states for each case instead of the selected-state trajectory.
     """
     if heatmap:
-        lsb_list = [results['LSB'][(model_name, c)]['mean']
-                    for c in selected_cases if (model_name, c) in results['LSB']]
-        L_used = _used_states(lsb_list)
-        n_cases = len(selected_cases)
-        fig, axes = plt.subplots(n_cases, 1,
-                                  figsize=(8, 0.8 * L_used * n_cases + 1),
-                                  squeeze=False)
-        for i, case in enumerate(selected_cases):
-            ax = axes[i, 0]
-            key = (model_name, case)
-            if key not in results['LSB']:
-                ax.set_visible(False)
-                continue
-            lsb = results['LSB'][key]['mean']    # (T+1, L)
-            T = lsb.shape[0] - 1
-            data = lsb[1:, :L_used].T            # (L_used, T)
-            y_labels = [str(l) for l in range(1, L_used + 1)]
-            sub_cmap = cmap if cmap is not None else _sequential_cmap(
-                case_colors[case]
-            )
-            is_bottom = (i == n_cases - 1)
-            im = _draw_heatmap(ax, data, y_labels, (0.5, T + 0.5),
-                               cmap=sub_cmap, xticks=[retr, test],
-                               show_xlabel=is_bottom,
-                               show_xticklabels=is_bottom)
-            if is_bottom:
-                ax.set_xticklabels(['Retrieval', 'Test'])
-            _add_case_legend(ax, f'Case {case}', case_colors[case])
-            _style_colorbar(fig.colorbar(im, ax=ax), label='Belief')
-        fig.tight_layout()
-        save(fig, out_dir / f'Beliefs_{short_name}_heatmap.png')
+        lsb_list = [results['LSB'].get((model_name, case), {}).get('mean')
+                    for case in selected_cases]
+        _plot_state_heatmap_stack(
+            lsb_list, [f'Case {case}' for case in selected_cases],
+            [case_colors[case] for case in selected_cases],
+            out_dir / f'Beliefs_{short_name}_heatmap.png',
+            cmap=cmap, xticks=[retr, test],
+            xticklabels=['Retrieval', 'Test'],
+            ylabel='State', fig_width=8,
+        )
         return
 
     fig, ax = styled_figure()
-
     for i, case in enumerate(selected_cases):
         key = (model_name, case)
         if key not in results['LSB']:
             continue
-        lsb = results['LSB'][key]['mean']          # (T+1, L*ncop)
-        color = case_colors[case]
-        ls = _ls(i)
-
-        # lsb[0] = pre-trial init; lsb[t] = post-trial-t.
-        # Segments aligned to trials 1..T, so use lsb[1:] throughout.
-        ax.plot(range(1, acq_end + 1), lsb[1:acq_end + 1, state_idx],
-                '-', color=color, linewidth=LINE_W, alpha=LINE_ALPHA,
-                label=f'Case {case}')
-        ax.plot(retr, lsb[retr, state_idx], 'x', color=color,
-                markersize=12, markeredgewidth=3, alpha=LINE_ALPHA)
-        ax.plot(range(retr + 1, ntrials), lsb[retr + 1:ntrials, state_idx],
-                ls, color=color, linewidth=LINE_W, alpha=LINE_ALPHA)
-        ax.plot(test, lsb[ntrials, state_idx], 'x', color=color,
-                markersize=12, markeredgewidth=3, alpha=LINE_ALPHA)
+        lsb = results['LSB'][key]['mean']
+        # Convert pre-trial + post-trial beliefs to trial-indexed values.
+        _plot_retrieval_test_segments(
+            ax, lsb[1:, state_idx], color=case_colors[case],
+            linestyle=_ls(i), label=f'Case {case}', ntrials=ntrials,
+            acq_end=acq_end, retr=retr, test=test,
+        )
 
     ax.set_xlim(0.5, ntrials + 0.5)
     ax.set_xticks([retr, test])
