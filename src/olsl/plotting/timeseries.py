@@ -52,8 +52,35 @@ def _used_states(lsb_list, threshold=1e-3):
     return max_used
 
 
+def _style_colorbar(cbar, label=None):
+    """Match colorbar label/tick sizes to the time-series axis conventions."""
+    if label is not None:
+        cbar.set_label(label, fontweight='bold', fontsize=FONT_SIZE_LABEL)
+
+    cbar.ax.tick_params(labelsize=14)
+
+    # Make vertical colorbars 4x wider.
+    if cbar.orientation == 'vertical':
+        aspect = cbar.ax.get_box_aspect()
+        if aspect is not None:
+            cbar.ax.set_box_aspect(aspect / 2)
+
+    return cbar
+
+
+def _add_case_legend(ax, label, color):
+    """Label a case heatmap with a compact color swatch instead of a title."""
+    handle = Line2D([], [], marker='s', linestyle='None',
+                    markerfacecolor=color, markeredgecolor=color,
+                    markersize=FONT_SIZE_LABEL * .5, label=label)
+    ax.legend(handles=[handle], loc='upper right', fontsize=FONT_SIZE_LABEL * .7,
+              frameon=False, handletextpad=0.4, borderaxespad=0.4)
+
+
 def _draw_heatmap(ax, data_2d, y_labels, x_range, cmap,
-                  vmin=0.0, vmax=1.0, xticks=None, xlim=None):
+                  vmin=0.0, vmax=1.0, xticks=None, xlim=None,
+                  xlabel='Trial', ylabel='State',
+                  show_xlabel=True, show_xticklabels=True):
     """Draw a heatmap where y = category, x = time.
 
     Parameters
@@ -64,6 +91,10 @@ def _draw_heatmap(ax, data_2d, y_labels, x_range, cmap,
         Range for the imshow extent (data coordinates).
     cmap : str or Colormap
         Colormap for the heatmap.
+    show_xlabel, show_xticklabels : bool
+        In vertically stacked heatmaps, pass False on non-bottom
+        subplots so only the bottom subplot carries the x-axis
+        label and tick numbers (matching the time-series style).
     """
     n_rows, n_cols = data_2d.shape
     extent = (x_range[0], x_range[1], 0.5, n_rows + 0.5)
@@ -71,12 +102,15 @@ def _draw_heatmap(ax, data_2d, y_labels, x_range, cmap,
                    cmap=cmap, vmin=vmin, vmax=vmax, interpolation='nearest')
     ax.set_yticks(np.arange(1, n_rows + 1))
     ax.set_yticklabels(y_labels)
-    if xticks is not None:
-        ax.set_xticks(xticks)
-    if xlim is not None:
-        ax.set_xlim(*xlim)
-    ax.set_xlabel('Trial', fontweight='bold', fontsize=12)
-    ax.set_ylabel('Latent state', fontweight='bold', fontsize=12)
+    # pretty_axes hides the top/right spines and applies the shared
+    # 14pt tick-label size. Passing None leaves imshow's extent (and
+    # therefore ylim/xlim) untouched where we don't want to override.
+    pretty_axes(ax, xlim=xlim, xticks=xticks)
+    ax.set_ylabel(ylabel, fontweight='bold', fontsize=FONT_SIZE_LABEL)
+    if show_xlabel:
+        ax.set_xlabel(xlabel, fontweight='bold', fontsize=FONT_SIZE_LABEL)
+    if not show_xticklabels:
+        ax.tick_params(labelbottom=False)
     return im
 
 
@@ -109,7 +143,7 @@ def plot_associative_strength(results, model_name, cases_pair, pair_idx,
                 xticks=xticks)
     ax.set_ylabel('Associative strength',
                   fontweight='bold', fontsize=FONT_SIZE_LABEL)
-    ax.legend(loc='best', fontsize=11)
+    ax.legend(loc='best', fontsize=FONT_SIZE_LABEL * .7)
 
     save(fig, out_dir / f'AssociativeStrength_{short_name}{pair_idx}.png')
 
@@ -140,7 +174,8 @@ def plot_beliefs(results, model_name, cases_pair, pair_idx,
                     for c in cases_pair]
         L_used = _used_states(lsb_list)
         n_cases = len(cases_pair)
-        fig, axes = plt.subplots(n_cases, 1, figsize=(8, 1.6 * L_used * n_cases + 1),
+        fig, axes = plt.subplots(n_cases, 1,
+                                  figsize=(8, 0.8 * L_used * n_cases + 1),
                                   squeeze=False)
         case_colors = [COLOR_PARTIAL, COLOR_CONTINUOUS]
         for i, (case, lsb) in enumerate(zip(cases_pair, lsb_list)):
@@ -149,10 +184,13 @@ def plot_beliefs(results, model_name, cases_pair, pair_idx,
             data = lsb[1:, :L_used].T          # (L_used, T)
             y_labels = [str(l) for l in range(1, L_used + 1)]
             sub_cmap = cmap if cmap is not None else _sequential_cmap(case_colors[i])
+            is_bottom = (i == n_cases - 1)
             im = _draw_heatmap(ax, data, y_labels, (0.5, T + 0.5),
-                               cmap=sub_cmap, xticks=xticks)
-            ax.set_title(f'Case {case}', fontsize=11)
-            fig.colorbar(im, ax=ax, label='Belief')
+                               cmap=sub_cmap, xticks=xticks,
+                               show_xlabel=is_bottom,
+                               show_xticklabels=is_bottom)
+            _add_case_legend(ax, f'Case {case}', case_colors[i])
+            _style_colorbar(fig.colorbar(im, ax=ax), label='Belief')
         fig.tight_layout()
         save(fig, out_dir / f'Beliefs_{short_name}{pair_idx}_heatmap.png')
         return
@@ -171,7 +209,7 @@ def plot_beliefs(results, model_name, cases_pair, pair_idx,
     ntrials = results['MU'][(model_name, cases_pair[0])]['mean'].shape[0]
     pretty_axes(ax, xlim=(0.5, ntrials + 0.5), ylim=ylim, xticks=xticks)
     ax.set_ylabel('Beliefs', fontweight='bold', fontsize=FONT_SIZE_LABEL)
-    ax.legend(loc='best', fontsize=11)
+    ax.legend(loc='best', fontsize=FONT_SIZE_LABEL * .7)
 
     save(fig, out_dir / f'Beliefs_{short_name}{pair_idx}.png')
 
@@ -226,12 +264,13 @@ def plot_sampled_belief(results, model_name, cases_pair, pair_idx,
                        interpolation='nearest')
         ax.set_yticks(np.arange(1, n_cases + 1))
         ax.set_yticklabels([f'Case {c}' for c in cases_pair])
-        ax.set_ylabel('Case', fontweight='bold', fontsize=12)
-        ax.set_xlabel('Trial', fontweight='bold', fontsize=12)
-        ax.set_xticks(xticks)
-        cbar = fig.colorbar(im, ax=ax, label='Sampled state',
-                            ticks=np.arange(0, L_max))
+        pretty_axes(ax, xlim=(0.5, T + 0.5), ylim=(0.5, n_cases + 0.5),
+                    xticks=xticks)
+        ax.set_ylabel('Case', fontweight='bold', fontsize=FONT_SIZE_LABEL)
+        ax.set_xlabel('Trial', fontweight='bold', fontsize=FONT_SIZE_LABEL)
+        cbar = fig.colorbar(im, ax=ax, ticks=np.arange(0, L_max))
         cbar.ax.set_yticklabels([str(i + 1) for i in range(L_max)])
+        _style_colorbar(cbar, label='Sampled state')
         fig.tight_layout()
         save(fig, out_dir
              / f'Sampled_belief_{short_name}{pair_idx}_heatmap.png')
@@ -303,95 +342,6 @@ def plot_expectations(results, model_name, cases_pair, short_name,
     save(fig, out_dir / f'Expectations_Renewal_{short_name}.png')
 
 
-def plot_mmkf_tracking(results, model_name, case, short_name,
-                       out_dir, xticks, par_kf_L=None,
-                       heatmap=False, cmap=None):
-    """3-panel Prior / Likelihood / Posterior from MMKF, per state.
-
-    One figure per (model, case). Each of the three panels plots one
-    line per latent state, matching MATLAB's
-    figure(8 + l*100 + j) block in RunRenewal.m.
-
-    State colors cycle through the package's CUE_COLORS palette and
-    state linestyles cycle through the LINESTYLES progression, so state
-    identity is visually consistent across plots.
-
-    NOTE: y-axis is left to autoscale because the three panels have
-    different scales (prior/posterior are probabilities in [0, 1];
-    likelihood is a density that can exceed 1). A shared (-0.1, 1.1)
-    limit would clip the likelihood panel.
-
-    When ``heatmap=True``, produces a heatmap variant where each panel
-    is (state × trial). The colormap is a white→DEFAULT_ACCENT gradient
-    (MMKF has one case per figure, so there is no per-case color from the
-    line plot to inherit; DEFAULT_ACCENT matches the package-wide accent
-    used for single-series plots). Saved as
-    ``MMKF_Tracking_Renewal_{short_name}_Case{case}_heatmap.png``.
-    """
-    key = (model_name, case)
-    if key not in results['MMKF_PRIOR']:
-        return
-
-    # (T, L_kf, nrep) → (T, L_kf) by averaging over replicates
-    prior = results['MMKF_PRIOR'][key].mean(axis=-1)
-    like  = results['MMKF_LIKE'][key].mean(axis=-1)
-    post  = results['MMKF_POST'][key].mean(axis=-1)
-
-    ntrials, L_kf = prior.shape
-    if par_kf_L is not None:
-        L_kf = min(L_kf, par_kf_L)
-
-    if heatmap:
-        sub_cmap = cmap if cmap is not None else _sequential_cmap(DEFAULT_ACCENT)
-        fig, axes = plt.subplots(3, 1, figsize=(10, 9))
-        panels = [
-            (prior[:ntrials, :L_kf],  'Prior',      1.0),
-            (like[:ntrials, :L_kf],   'Likelihood', float(np.nanmax(like[:ntrials, :L_kf])) or 1.0),
-            (post[:ntrials, :L_kf],   'Posterior',  1.0),
-        ]
-        for ax, (data_panel, name, vmax_panel) in zip(axes, panels):
-            data_2d = data_panel.T       # (L, T)
-            im = ax.imshow(data_2d, aspect='auto', origin='lower',
-                           extent=(0.5, ntrials + 0.5, 0.5, L_kf + 0.5),
-                           cmap=sub_cmap, vmin=0.0, vmax=vmax_panel,
-                           interpolation='nearest')
-            ax.set_ylabel(name, fontweight='bold', fontsize=12)
-            ax.set_yticks(np.arange(1, L_kf + 1))
-            ax.set_yticklabels([str(l) for l in range(1, L_kf + 1)])
-            ax.set_xticks(xticks)
-            fig.colorbar(im, ax=ax)
-        axes[-1].set_xlabel('Trial', fontweight='bold', fontsize=12)
-        axes[0].set_title(
-            f'{short_name} — Case {case} (MMKF heatmaps)', fontsize=13
-        )
-        fig.tight_layout()
-        save(fig, out_dir
-             / f'MMKF_Tracking_Renewal_{short_name}_Case{case}_heatmap.png')
-        return
-
-    fig, axes = plt.subplots(3, 1, figsize=(8, 6), sharex=True)
-    panels = [(prior, 'Prior'), (like, 'Likelihood'), (post, 'Posterior')]
-    for ax, (data, name) in zip(axes, panels):
-        for l in range(L_kf):
-            ax.plot(data[:, l], linewidth=2, alpha=LINE_ALPHA,
-                    color=CUE_COLORS[l % len(CUE_COLORS)],
-                    linestyle=_ls(l),
-                    label=f'State {l+1}')
-        ax.set_ylabel(name, fontweight='bold', fontsize=14)
-        ax.set_xlim(1, ntrials)
-        ax.legend(loc='best', fontsize=10)
-
-    axes[-1].set_xlabel('Trial', fontweight='bold', fontsize=14)
-    axes[-1].set_xticks(xticks)
-    axes[0].set_title(f'{short_name} — Case {case} (MMKF Tracking)',
-                      fontsize=14)
-
-    fig.tight_layout()
-    fig.savefig(out_dir / f'MMKF_Tracking_Renewal_{short_name}_Case{case}.png',
-                dpi=300, bbox_inches='tight')
-    plt.close(fig)
-
-
 def plot_associative_strength_per_cue(results, task_name, model_name,
                                       cue_indices, cue_labels, xticks,
                                       short_name, out_dir,
@@ -430,7 +380,7 @@ def plot_associative_strength_per_cue(results, task_name, model_name,
     pretty_axes(ax, xlim=xlim, ylim=ylim, xticks=xticks)
     ax.set_ylabel('Associative strength',
                   fontweight='bold', fontsize=FONT_SIZE_LABEL)
-    ax.legend(loc='best', fontsize=11)
+    ax.legend(loc='best', fontsize=FONT_SIZE_LABEL * .7)
 
     # out_dir is already per-task; filename omits the task name.
     save(fig, out_dir / f'AssociativeStrength_{short_name}.png')
@@ -529,7 +479,7 @@ def plot_spontaneous_recovery_beliefs(results, model_name, cases,
         L_used = _used_states(lsb_list)
         n_cases = len(cases)
         fig, axes = plt.subplots(n_cases, 1,
-                                  figsize=(10, 1.6 * L_used * n_cases + 1),
+                                  figsize=(10, 0.8 * L_used * n_cases + 1),
                                   squeeze=False)
         for i, case in enumerate(cases):
             ax = axes[i, 0]
@@ -553,15 +503,21 @@ def plot_spontaneous_recovery_beliefs(results, model_name, cases,
                               0.5, L_used + 0.5),
                       cmap=sub_cmap, vmin=0.0, vmax=1.0,
                       interpolation='nearest')
-            ax.set_xticks([0, 20, 40, 60, 70])
-            ax.set_xticklabels(['0', '20', '40', '0', '10'])
-            ax.set_xlim(0, 71)
             ax.set_yticks(np.arange(1, L_used + 1))
             ax.set_yticklabels([str(l) for l in range(1, L_used + 1)])
-            ax.set_ylabel('Latent state', fontweight='bold', fontsize=11)
-            ax.set_title(f'{case_labels[i]}', fontsize=11)
-            fig.colorbar(im, ax=ax, label='Belief')
-        axes[-1, 0].set_xlabel('Trial', fontweight='bold', fontsize=12)
+            pretty_axes(ax, xlim=(0, 71), ylim=(0.5, L_used + 0.5),
+                        xticks=[0, 20, 40, 60, 70])
+            ax.set_xticklabels(['0', '20', '40', '0', '10'])
+            ax.set_ylabel('Latent state', fontweight='bold',
+                          fontsize=FONT_SIZE_LABEL)
+            is_bottom = (i == n_cases - 1)
+            if is_bottom:
+                ax.set_xlabel('Trial', fontweight='bold',
+                              fontsize=FONT_SIZE_LABEL)
+            else:
+                ax.tick_params(labelbottom=False)
+            _add_case_legend(ax, case_labels[i], case_colors[i])
+            _style_colorbar(fig.colorbar(im, ax=ax), label='Belief')
         fig.tight_layout()
         save(fig, out_dir / f'Beliefs_SponRec_{short_name}_heatmap.png')
         return
@@ -672,7 +628,7 @@ def plot_spontaneous_recovery_dilution(results, model_name, cases,
         L_used = _used_states(lsb_list)
         n_cases = len(cases)
         fig, axes = plt.subplots(n_cases, 1,
-                                  figsize=(10, 1.6 * L_used * n_cases + 1),
+                                  figsize=(10, 0.8 * L_used * n_cases + 1),
                                   squeeze=False)
         for i, case in enumerate(cases):
             ax = axes[i, 0]
@@ -696,15 +652,21 @@ def plot_spontaneous_recovery_dilution(results, model_name, cases,
                               0.5, L_used + 0.5),
                       cmap=sub_cmap, vmin=0.0, vmax=1.0,
                       interpolation='nearest')
-            ax.set_xticks([0, 20, 40, 60, 70])
-            ax.set_xticklabels(['0', '20', '40', '0', '10'])
-            ax.set_xlim(0, 71)
             ax.set_yticks(np.arange(1, L_used + 1))
             ax.set_yticklabels([str(l) for l in range(1, L_used + 1)])
-            ax.set_ylabel('Latent state', fontweight='bold', fontsize=11)
-            ax.set_title(f'{case_labels[i]}', fontsize=11)
-            fig.colorbar(im, ax=ax, label='Belief')
-        axes[-1, 0].set_xlabel('Trial', fontweight='bold', fontsize=12)
+            pretty_axes(ax, xlim=(0, 71), ylim=(0.5, L_used + 0.5),
+                        xticks=[0, 20, 40, 60, 70])
+            ax.set_xticklabels(['0', '20', '40', '0', '10'])
+            ax.set_ylabel('Latent state', fontweight='bold',
+                          fontsize=FONT_SIZE_LABEL)
+            is_bottom = (i == n_cases - 1)
+            if is_bottom:
+                ax.set_xlabel('Trial', fontweight='bold',
+                              fontsize=FONT_SIZE_LABEL)
+            else:
+                ax.tick_params(labelbottom=False)
+            _add_case_legend(ax, case_labels[i], case_colors[i])
+            _style_colorbar(fig.colorbar(im, ax=ax), label='Belief')
         fig.tight_layout()
         save(fig, out_dir
              / f'BeliefDilution_SponRec_{short_name}_heatmap.png')
@@ -773,7 +735,7 @@ def plot_spontaneous_recovery_dilution(results, model_name, cases,
     ax.set_ylim(-0.1, 1.1)
     ax.set_ylabel(f'Belief in State {state_idx + 1}',
                   fontweight='bold', fontsize=FONT_SIZE_LABEL)
-    ax.set_title('Belief dilution during silent delay', fontsize=13)
+    ax.set_title('Belief dilution during silent delay', fontsize=FONT_SIZE_LABEL)
     ax.legend(loc='best', fontsize=12)
 
     save(fig, out_dir / f'BeliefDilution_SponRec_{short_name}.png')
@@ -816,7 +778,7 @@ def plot_cue_schedule(par, cue_names, title, out_dir, filename):
     ax.set_yticklabels(cue_names)
     ax.set_xticks([20, 40, 60])
     ax.set_xlabel('Trial')
-    ax.set_title(title, fontsize=13)
+    ax.set_title(title, fontsize=FONT_SIZE_LABEL)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
 
@@ -865,7 +827,7 @@ def plot_cue_strength_zoomed(results, model_name, cases, case_labels,
     pretty_axes(ax, xlim=xlim, ylim=ylim, xticks=xticks)
     ax.set_ylabel('Associative strength',
                   fontweight='bold', fontsize=FONT_SIZE_LABEL)
-    ax.legend(loc='best', fontsize=11)
+    ax.legend(loc='best', fontsize=FONT_SIZE_LABEL * .7)
 
     save(fig, out_dir / f'{filename_stem}_{short_name}.png')
 
@@ -899,7 +861,7 @@ def plot_beliefs_top2(results, model_name, cases, case_labels,
         n_cases = len(cases)
         case_colors = [COLOR_CONTINUOUS, COLOR_PARTIAL]
         fig, axes = plt.subplots(n_cases, 1,
-                                  figsize=(8, 1.6 * L_used * n_cases + 1),
+                                  figsize=(8, 0.8 * L_used * n_cases + 1),
                                   squeeze=False)
         for i, case in enumerate(cases):
             ax = axes[i, 0]
@@ -914,10 +876,13 @@ def plot_beliefs_top2(results, model_name, cases, case_labels,
             sub_cmap = cmap if cmap is not None else _sequential_cmap(
                 case_colors[i % len(case_colors)]
             )
+            is_bottom = (i == n_cases - 1)
             im = _draw_heatmap(ax, data, y_labels, (0.5, T + 0.5),
-                               cmap=sub_cmap, xticks=xticks, xlim=xlim)
-            ax.set_title(f'{case_labels[i]}', fontsize=11)
-            fig.colorbar(im, ax=ax, label='Belief')
+                               cmap=sub_cmap, xticks=xticks, xlim=xlim,
+                               show_xlabel=is_bottom,
+                               show_xticklabels=is_bottom)
+            _add_case_legend(ax, case_labels[i], case_colors[i % len(case_colors)])
+            _style_colorbar(fig.colorbar(im, ax=ax), label='Belief')
         fig.tight_layout()
         save(fig, out_dir / f'{filename_stem}_{short_name}_heatmap.png')
         return
@@ -1090,16 +1055,15 @@ def plot_beliefs_compound_window(results, model_name, case,
         data = lsb[1:, :L_used].T       # (L_used, T)
         y_labels = [str(l) for l in range(1, L_used + 1)]
         sub_cmap = cmap if cmap is not None else _sequential_cmap(COLOR_NEUTRAL)
-        fig, ax = styled_figure()
+        fig, ax = plt.subplots(figsize=(6, 2.5))
         im = _draw_heatmap(ax, data, y_labels, (0.5, T + 0.5),
                            cmap=sub_cmap, xticks=xticks, xlim=xlim)
         # Shaded compound window
         ax.axvspan(shade_window[0], shade_window[1],
                    facecolor=COLOR_SHADE, alpha=0.15,
                    edgecolor='none', zorder=2)
-        ax.set_title(f'{model_label} — Case {case} (all states)',
-                     fontsize=13)
-        fig.colorbar(im, ax=ax, label='Belief')
+        _add_case_legend(ax, f'{model_label} — Case {case}', COLOR_NEUTRAL)
+        _style_colorbar(fig.colorbar(im, ax=ax), label='Belief')
         save(fig, out_dir
              / f'Beliefs_{model_label}_Case{case}_heatmap.png')
         return
@@ -1123,7 +1087,7 @@ def plot_beliefs_compound_window(results, model_name, case,
 
     pretty_axes(ax, xlim=xlim, ylim=(-0.1, 1.1), xticks=xticks)
     ax.set_ylabel('Beliefs', fontweight='bold', fontsize=FONT_SIZE_LABEL)
-    ax.legend(loc='best', fontsize=11)
+    ax.legend(loc='best', fontsize=FONT_SIZE_LABEL * .7)
 
     save(fig, out_dir / f'Beliefs_{model_label}_Case{case}.png')
 
@@ -1173,7 +1137,7 @@ def plot_retrieval_time(results, model_name, cases, short_name, out_dir,
                   fontweight='bold', fontsize=FONT_SIZE_LABEL)
     ax.set_xlabel('Time delay after retrieval',
                   fontweight='bold', fontsize=FONT_SIZE_LABEL)
-    ax.legend(loc='best', fontsize=11)
+    ax.legend(loc='best', fontsize=FONT_SIZE_LABEL * .7)
     save(fig, out_dir / f'RetrievalTime_{short_name}.png')
 
 
@@ -1231,7 +1195,7 @@ def plot_expectations_by_case(results, model_name, selected_cases,
         ax.set_ylim(*ylim)
     ax.set_ylabel('Associative strength',
                   fontweight='bold', fontsize=FONT_SIZE_LABEL)
-    ax.legend(loc='best', fontsize=11)
+    ax.legend(loc='best', fontsize=FONT_SIZE_LABEL * .7)
     save(fig, out_dir / f'Expectations_{short_name}.png')
 
     if inset:
@@ -1277,7 +1241,7 @@ def plot_beliefs_by_case(results, model_name, selected_cases,
         L_used = _used_states(lsb_list)
         n_cases = len(selected_cases)
         fig, axes = plt.subplots(n_cases, 1,
-                                  figsize=(8, 1.6 * L_used * n_cases + 1),
+                                  figsize=(8, 0.8 * L_used * n_cases + 1),
                                   squeeze=False)
         for i, case in enumerate(selected_cases):
             ax = axes[i, 0]
@@ -1292,11 +1256,15 @@ def plot_beliefs_by_case(results, model_name, selected_cases,
             sub_cmap = cmap if cmap is not None else _sequential_cmap(
                 case_colors[case]
             )
+            is_bottom = (i == n_cases - 1)
             im = _draw_heatmap(ax, data, y_labels, (0.5, T + 0.5),
-                               cmap=sub_cmap, xticks=[retr, test])
-            ax.set_xticklabels(['Retrieval', 'Test'])
-            ax.set_title(f'Case {case}', fontsize=11)
-            fig.colorbar(im, ax=ax, label='Belief')
+                               cmap=sub_cmap, xticks=[retr, test],
+                               show_xlabel=is_bottom,
+                               show_xticklabels=is_bottom)
+            if is_bottom:
+                ax.set_xticklabels(['Retrieval', 'Test'])
+            _add_case_legend(ax, f'Case {case}', case_colors[case])
+            _style_colorbar(fig.colorbar(im, ax=ax), label='Belief')
         fig.tight_layout()
         save(fig, out_dir / f'Beliefs_{short_name}_heatmap.png')
         return
@@ -1329,5 +1297,5 @@ def plot_beliefs_by_case(results, model_name, selected_cases,
     ax.set_ylim(*ylim)
     ax.set_ylabel(f'Belief in State {state_idx + 1}',
                   fontweight='bold', fontsize=FONT_SIZE_LABEL)
-    ax.legend(loc='best', fontsize=11)
+    ax.legend(loc='best', fontsize=FONT_SIZE_LABEL * .7)
     save(fig, out_dir / f'Beliefs_{short_name}.png')

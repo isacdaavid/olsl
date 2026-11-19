@@ -90,6 +90,7 @@ FIG_SIZE = (6, 5)
 LINE_ALPHA = 0.5
 FONT_SIZE_LABEL = 18
 LINESTYLES = ['-', '--', '-.', ':']
+LINESTYLES = ['-']
 
 
 def _ls(i):
@@ -97,19 +98,23 @@ def _ls(i):
     return LINESTYLES[i % len(LINESTYLES)]
 
 
-def pretty_axes(ax, xlim, ylim, xticks):
+def pretty_axes(ax, xlim=None, ylim=None, xticks=None):
     """Minimal stand-in for MATLAB's PrettyFig.
 
-    NB: the MATLAB version's arg order is (title, ylim, xlim, xticks) —
-    the parameter names ``xLim``/``ylim`` in RunPREE.m are misleading.
-    Here we use the conventional (xlim, ylim, xticks) order.
+    Any of ``xlim``, ``ylim``, ``xticks`` may be None to leave that
+    aspect of the axis untouched. Useful for heatmaps, where the imshow
+    extent already sets limits/ticks and only the spine-hiding and
+    tick-label-size behavior of PrettyFig is wanted.
     """
-    ax.set_xlim(xlim)
-    ax.set_ylim(ylim)
-    ax.set_xticks(xticks)
+    if xlim is not None:
+        ax.set_xlim(xlim)
+    if ylim is not None:
+        ax.set_ylim(ylim)
+    if xticks is not None:
+        ax.set_xticks(xticks)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
-    ax.tick_params(labelsize=14)
+    ax.tick_params(labelsize=FONT_SIZE_LABEL * .8)
 
 
 def styled_figure():

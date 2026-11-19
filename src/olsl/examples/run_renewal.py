@@ -88,14 +88,6 @@ def main():
                     short_name=short, out_dir=OUT_DIR, xticks=xticks,
                 )
 
-            # --- MMKF tracking (one 3-panel figure per case) ---
-            for case in CASES:
-                timeseries.plot_mmkf_tracking(
-                    results, model_name, case, short, OUT_DIR,
-                    xticks=xticks,
-                    par_kf_L=par['kf']['L'],
-                )
-
     print(f'Figures written to {OUT_DIR.resolve()}')
 
 
