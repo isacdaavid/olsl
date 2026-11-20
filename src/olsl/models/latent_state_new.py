@@ -218,19 +218,19 @@ class LatentState:
 
             if lsb0.ndim != 1 or lsb0.size == 0:
                 raise ValueError("initialV['lsb'] must be a non-empty 1-D array.")
-            n_states = lsb0.size
-            if V0.shape != (p.REWARDS, p.CUES, n_states):
+            l_states = lsb0.size
+            if V0.shape != (p.REWARDS, p.CUES, l_states):
                 raise ValueError(
                     "initialV['V'] must have shape "
-                    f"({p.REWARDS}, {p.CUES}, {n_states}); got {V0.shape}."
+                    f"({p.REWARDS}, {p.CUES}, {l_states}); got {V0.shape}."
                 )
-            if B0.shape != (p.CUES, p.CUES, p.REWARDS, n_states):
+            if B0.shape != (p.CUES, p.CUES, p.REWARDS, l_states):
                 raise ValueError(
                     "initialV['B'] must have shape "
-                    f"({p.CUES}, {p.CUES}, {p.REWARDS}, {n_states}); "
+                    f"({p.CUES}, {p.CUES}, {p.REWARDS}, {l_states}); "
                     f"got {B0.shape}."
                 )
-            if "Lmax" in init and int(init["Lmax"]) != n_states:
+            if "Lmax" in init and int(init["Lmax"]) != l_states:
                 raise ValueError(
                     "initialV uses the previous fixed/block latent-state "
                     "allocation. Its stored Lmax does not match len(lsb); "
@@ -244,38 +244,38 @@ class LatentState:
                 lsb0 = np.asarray(p.lsb0, dtype=np.float64).copy()
                 if lsb0.ndim != 1 or lsb0.size == 0:
                     raise ValueError("lsb0 must be a non-empty 1-D array.")
-                n_states = lsb0.size
+                l_states = lsb0.size
             elif p.initialex is not None:
                 initialex = np.asarray(p.initialex, dtype=np.float64)
                 if initialex.ndim != 3:
                     raise ValueError(
                         "initialex must have shape (REWARDS, CUES, L_0)."
                     )
-                n_states = initialex.shape[-1]
-                if n_states == 0:
+                l_states = initialex.shape[-1]
+                if l_states == 0:
                     raise ValueError("initialex must contain at least one state.")
-                lsb0 = np.full(n_states, 1.0 / n_states, dtype=np.float64)
+                lsb0 = np.full(l_states, 1.0 / l_states, dtype=np.float64)
             else:
-                n_states = 1
+                l_states = 1
                 lsb0 = np.ones(1, dtype=np.float64)
 
             # Associative strengths; initialex can also determine L_0.
             if p.initialex is None:
-                V0 = np.zeros((p.REWARDS, p.CUES, n_states), dtype=np.float64)
+                V0 = np.zeros((p.REWARDS, p.CUES, l_states), dtype=np.float64)
             else:
                 V0 = np.asarray(p.initialex, dtype=np.float64).copy()
-                if V0.shape != (p.REWARDS, p.CUES, n_states):
+                if V0.shape != (p.REWARDS, p.CUES, l_states):
                     raise ValueError(
                         "initialex must have shape "
-                        f"({p.REWARDS}, {p.CUES}, {n_states}); got {V0.shape}."
+                        f"({p.REWARDS}, {p.CUES}, {l_states}); got {V0.shape}."
                     )
 
             # Covariance: identity per reward dimension and latent state.
             B0 = np.zeros(
-                (p.CUES, p.CUES, p.REWARDS, n_states), dtype=np.float64
+                (p.CUES, p.CUES, p.REWARDS, l_states), dtype=np.float64
             )
             for d in range(p.REWARDS):
-                for state in range(n_states):
+                for state in range(l_states):
                     B0[:, :, d, state] = np.eye(p.CUES)
 
             q0 = 0.0
@@ -299,7 +299,7 @@ class LatentState:
             np.full((p.REWARDS, p.ARMS), np.nan, dtype=np.float64)
         ]
         self.expected_reward = [
-            np.full((p.REWARDS, n_states), np.nan, dtype=np.float64)
+            np.full((p.REWARDS, l_states), np.nan, dtype=np.float64)
         ]
 
     # -- public API ------------------------------------------------------
@@ -443,13 +443,13 @@ class LatentState:
         """
         p = self.par
         lsb = self.lsb[s]
-        n_states = lsb.size
+        l_states = lsb.size
 
         # Temporal decay toward uniform (per elapsed time between trials).
         if p.t != 1 and p.time is not None:
             elapsed = p.time[p.t - 1] - p.time[p.t - 2]
             prob_stay = (1 - p.gamma) ** (elapsed - 1)
-            lsb[:] = lsb * prob_stay + (1 - prob_stay) / n_states
+            lsb[:] = lsb * prob_stay + (1 - prob_stay) / l_states
 
         # Explicit context reset: uniform over currently active states.
         if p.context is not None and p.t in p.context:
@@ -476,11 +476,11 @@ class LatentState:
         Returns:
             Log-likelihood vector of shape ``(K,)`` for currently active states.
         """
-        n_states = self.lsb[s].size
-        if expected_reward.shape != (self.par.REWARDS, n_states):
+        l_states = self.lsb[s].size
+        if expected_reward.shape != (self.par.REWARDS, l_states):
             raise ValueError(
                 "expected_reward must have shape "
-                f"({self.par.REWARDS}, {n_states}); got {expected_reward.shape}."
+                f"({self.par.REWARDS}, {l_states}); got {expected_reward.shape}."
             )
         return np.sum(
             -(reward[:, None] - expected_reward) ** 2 / (2 * sigmasq),
@@ -500,10 +500,10 @@ class LatentState:
         """
         p = self.par
         prior_beliefs = self.lsb[s]
-        n_states = prior_beliefs.size
+        l_states = prior_beliefs.size
 
         prior = (
-            (1 - p.gamma) * prior_beliefs + p.gamma / n_states
+            (1 - p.gamma) * prior_beliefs + p.gamma / l_states
         )
         scaled_ll = np.exp(ll - np.max(ll))
         out = prior * scaled_ll
@@ -532,7 +532,7 @@ class LatentState:
         """
         p = self.par
         beliefs = self.lsb[s]
-        n_states = beliefs.size
+        l_states = beliefs.size
 
         # Include the neutral candidate state's likelihood (log-likelihood 0)
         # when obtaining the common scale, matching the previous comparison.
@@ -540,7 +540,7 @@ class LatentState:
         mx = np.max(np.exp(np.append(ll, candidate_ll)))
 
         # Scaled likelihood if we keep the current active set.
-        stay_prior = (1 - p.gamma) * beliefs + p.gamma / n_states
+        stay_prior = (1 - p.gamma) * beliefs + p.gamma / l_states
         stay = stay_prior * np.exp(ll - mx)
         l0 = np.sum(stay)
 
@@ -558,7 +558,7 @@ class LatentState:
             return
 
         # --- spawn one state ---
-        n_new_states = n_states + 1
+        n_new_states = l_states + 1
         self.q[s] = 0.0
 
         # Update beliefs over the old states plus the newly created state.
@@ -606,7 +606,7 @@ class LatentState:
         V = self.V[s]
         B = self.B[s]
         lsb = self.lsb[s]
-        n_states = lsb.size
+        l_states = lsb.size
         sigmasq = float(self.sigmasq[s])
 
         # Rumination iterations (fewer on the last trial).
@@ -618,7 +618,7 @@ class LatentState:
         expected_reward = np.sum(V * c_vec[:, :, None], axis=1)
 
         for d in range(p.REWARDS):
-            for state in range(n_states):
+            for state in range(l_states):
                 # Exponentially weighted covariance.
                 c_d = c_vec[d, :]
                 c_outer = np.outer(c_d, c_d)
@@ -651,6 +651,6 @@ class LatentState:
         p = self.par
         return (
             f"LatentState(REWARDS={p.REWARDS}, CUES={p.CUES}, ARMS={p.ARMS}, "
-            f"n_states={self.lsb[self.step].size}, "
+            f"l_states={self.lsb[self.step].size}, "
             f"step={self.step}/{len(self.lsb) - 1})"
         )
