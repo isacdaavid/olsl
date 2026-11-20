@@ -7,29 +7,33 @@ A flexible and generalizable model of online latent-state learning.
 PLOS Computational Biology, 15(9), e1007331.
 https://doi.org/10.1371/journal.pcbi.1007331
 
-The agent keeps the **full history** of every persistent variable along a
-leading time axis. Slot ``0`` is the initial state; slot ``k`` is the state
-after ``k`` completed trials. ``self.step`` is the index of the last
-completed state, so:
+The agent keeps the **full history** of every persistent variable. Slot ``0``
+is the initial state; slot ``t`` is the state after ``t`` completed trials.
+``self.step`` is the index of the last completed state, so:
 
-    agent.V[0:agent.step + 1]   # full history
-    agent.V[agent.step]         # current state
+    agent.V[0:agent.step + 1]   # list of per-trial arrays
+    agent.V[agent.step]         # current associative strengths
+
+The number of latent states is dynamic. A change-point event adds one state,
+so the latent-state dimension can differ between history slots.
 
 State
-    V       : (T, REWARDS, CUES, LATENT_TOTAL)       associative strengths
-    B       : (T, CUES, CUES, REWARDS, LATENT_TOTAL) associability covariance
-    lsb     : (T, LATENT_TOTAL)                      latent-state beliefs
-    sigmasq : (T,)                                   running reward variance
-    Lmax    : (T,)                                   number of active latent states
-    q       : (T,)                                   change-point statistic
+    V       : list[(REWARDS, CUES, K_t)]       associative strengths
+    B       : list[(CUES, CUES, REWARDS, K_t)] associability covariance
+    lsb     : list[(K_t,)]                    latent-state beliefs
+    sigmasq : list[float]                     running reward variance
+    q       : list[float]                     change-point statistic
 
 Per-trial record
-    arm               : (T,)                       chosen arm index
-    reward            : (T, REWARDS)               realized reward
-    expected_reward_0 : (T, REWARDS, ARMS)         pre-selection value per arm
-    expected_reward   : (T, REWARDS, LATENT_TOTAL) per-state value for chosen arm
+    arm               : list[int]             chosen arm index
+    reward            : list[(REWARDS,)]      realized reward
+    expected_reward_0 : list[(REWARDS, ARMS)]  pre-selection value per arm
+    expected_reward   : list[(REWARDS, K_before)] predictions for chosen arm,
+                                               before any state is added
 
-``LATENT_TOTAL = par.LATENT * par.LATENT_MAX`` throughout.
+Here ``K_t`` is the number of latent states represented at history slot ``t``.
+The cue representation supplied by the task is shared across latent states:
+``world['c_vec']`` has shape ``(REWARDS, CUES, ARMS)``.
 """
 
 from dataclasses import dataclass
@@ -62,12 +66,6 @@ class Parameters:
 
     ARMS: int = 1
     """Number of arms / actions."""
-
-    LATENT: int = 3
-    """Number of latent-state hypotheses per copy."""
-
-    LATENT_MAX: int = 1
-    """Copies per latent state (capacity of the change-point process)."""
 
     # --- learning dynamics ---
     alpha0: float = 0.1
@@ -102,13 +100,18 @@ class Parameters:
 
     # --- optional initialization overrides ---
     initialex: Optional[np.ndarray] = None
-    """Initial associative strengths, shape ``(REWARDS, CUES, LATENT)``."""
+    """Initial associative strengths, shape ``(REWARDS, CUES, K_0)``."""
 
     lsb0: Optional[np.ndarray] = None
-    """Initial beliefs over the first ``LATENT`` states, shape ``(LATENT,)``."""
+    """Initial beliefs over ``K_0`` states, shape ``(K_0,)``.
+
+    If omitted, one initial state with belief 1 is used. When ``initialex`` is
+    supplied without ``lsb0``, its final dimension determines ``K_0`` and the
+    initial beliefs are uniform over those states.
+    """
 
     initialV: Optional[dict] = None
-    """Full saved agent state to restore into slot 0 (see ``save_state``)."""
+    """Full saved agent state to restore into the initial history slot."""
 
     # --- task-schedule fields (TODO: move to Task) ---
     t: int = 1
@@ -123,29 +126,6 @@ class Parameters:
     context: Optional[list] = None
     """1-based trial indices at which beliefs reset (will move to Task)."""
 
-    @property
-    def LATENT_TOTAL(self) -> int:
-        """Total number of latent-state slots, ``LATENT * LATENT_MAX``."""
-        return self.LATENT * self.LATENT_MAX
-
-
-# ---------------------------------------------------------------------------
-# Array specifications (name, shape, dtype)
-# ---------------------------------------------------------------------------
-
-_ARRAY_SPECS = [
-    ("V",       lambda p: (p.REWARDS, p.CUES, p.LATENT_TOTAL),         np.float64),
-    ("B",       lambda p: (p.CUES, p.CUES, p.REWARDS, p.LATENT_TOTAL),    np.float64),
-    ("lsb",     lambda p: (p.LATENT_TOTAL,),                   np.float64),
-    ("sigmasq", lambda p: (),                             np.float64),
-    ("Lmax",    lambda p: (),                             np.int64),
-    ("q",       lambda p: (),                             np.float64),
-    ("arm",     lambda p: (),                             np.int64),
-    ("reward",     lambda p: (p.REWARDS,),                         np.float64),
-    ("expected_reward_0",     lambda p: (p.REWARDS, p.ARMS),                     np.float64),
-    ("expected_reward",      lambda p: (p.REWARDS, p.LATENT_TOTAL),               np.float64),
-]
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -155,7 +135,7 @@ def _as_2d(reward: np.ndarray, n_rewards: int, n_arms: int) -> np.ndarray:
     """Coerce a scalar / 1-D / 2-D reward into shape ``(REWARDS, ARMS)``.
 
     Args:
-        reward: Reward array of arbitrary rank ≤ 2.
+        reward: Reward array of arbitrary rank <= 2.
         n_rewards: Target first dimension.
         n_arms: Target second dimension.
 
@@ -179,9 +159,13 @@ def _as_2d(reward: np.ndarray, n_rewards: int, n_arms: int) -> np.ndarray:
 class LatentState:
     """Approximate Bayesian latent-state reinforcement learning agent.
 
-    Every persistent variable is stored as a history array with a leading
-    time axis. ``self.step`` indexes the last completed trial; the next
-    call to :meth:`update` writes into slot ``self.step + 1``.
+    Every trial-indexed variable is stored as a Python list with one entry
+    per history slot. Array-valued entries are independent NumPy arrays;
+    scalar-valued entries are Python scalars. This gives every history the
+    same append-based convention, including variables whose shapes are fixed.
+
+    ``self.step`` indexes the last completed trial; the next call to
+    :meth:`update` appends slot ``self.step + 1``.
 
     Args:
         parameters: Hyperparameters. If ``None``, defaults are used.
@@ -189,87 +173,134 @@ class LatentState:
     Attributes:
         par: The :class:`Parameters` instance in use.
         step: Index of the last completed trial (``0`` = initial state).
-        V, B, lsb, sigmasq, Lmax, q: Persistent history arrays.
-        arm, reward, expected_reward_0, expected_reward: Per-trial record arrays.
+        V, B, lsb, expected_reward: Per-trial array histories.
+        sigmasq, q, arm: Per-trial scalar histories.
+        reward, expected_reward_0: Per-trial array histories.
+        Lmax: Derived history of active latent-state counts, obtained from
+            ``len(lsb[t])`` rather than stored independently.
     """
 
     def __init__(self, parameters: Optional[Parameters] = None) -> None:
         self.par: Parameters = parameters or Parameters()
-        p = self.par
 
-        # Initial capacity: enough for the declared schedule, with a floor.
-        self._capacity: int = max(p.ntrials + 1, 128)
-        for name, shape_fn, dtype in _ARRAY_SPECS:
-            arr = np.full((self._capacity,) + shape_fn(p), np.nan, dtype=dtype)
-            setattr(self, name, arr)
+        # Every model variable uses an append-only full-history list.
+        self.V: list[np.ndarray] = []
+        self.B: list[np.ndarray] = []
+        self.lsb: list[np.ndarray] = []
+        self.sigmasq: list[float] = []
+        self.q: list[float] = []
+        self.arm: list[int] = []
+        self.reward: list[np.ndarray] = []
+        self.expected_reward_0: list[np.ndarray] = []
+        self.expected_reward: list[np.ndarray] = []
 
-        self._initialize_slot(0)
         self.step: int = 0
+        self._initialize_history()
 
-    # -- slot initialization / growth ------------------------------------
 
-    def _initialize_slot(self, s: int) -> None:
-        """Populate slot ``s`` with the initial (or restored) state.
+    @property
+    def Lmax(self) -> list[int]:
+        """Derived number of active latent states at each history slot."""
+        return [len(beliefs) for beliefs in self.lsb]
 
-        Args:
-            s: History index to write.
-        """
+    # -- initialization -------------------------------------------------
+
+
+    def _initialize_history(self) -> None:
+        """Create the initial state and initialize its history records."""
         p = self.par
-        latent_total = p.LATENT_TOTAL
 
         if p.initialV is not None:
             init = p.initialV
-            self.V[s] = init["V"]
-            self.B[s] = init["B"]
-            self.lsb[s] = init["lsb"]
-            self.Lmax[s] = init["Lmax"]
-            self.q[s] = init["q"]
-            self.sigmasq[s] = init["sigmasq"]
-            return
+            lsb0 = np.asarray(init["lsb"], dtype=np.float64).copy()
+            V0 = np.asarray(init["V"], dtype=np.float64).copy()
+            B0 = np.asarray(init["B"], dtype=np.float64).copy()
 
-        # Associative strengths
-        self.V[s] = p.initialex if p.initialex is not None else 0.0
+            if lsb0.ndim != 1 or lsb0.size == 0:
+                raise ValueError("initialV['lsb'] must be a non-empty 1-D array.")
+            n_states = lsb0.size
+            if V0.shape != (p.REWARDS, p.CUES, n_states):
+                raise ValueError(
+                    "initialV['V'] must have shape "
+                    f"({p.REWARDS}, {p.CUES}, {n_states}); got {V0.shape}."
+                )
+            if B0.shape != (p.CUES, p.CUES, p.REWARDS, n_states):
+                raise ValueError(
+                    "initialV['B'] must have shape "
+                    f"({p.CUES}, {p.CUES}, {p.REWARDS}, {n_states}); "
+                    f"got {B0.shape}."
+                )
+            if "Lmax" in init and int(init["Lmax"]) != n_states:
+                raise ValueError(
+                    "initialV uses the previous fixed/block latent-state "
+                    "allocation. Its stored Lmax does not match len(lsb); "
+                    "create a state snapshot using this dynamic-state version."
+                )
 
-        # Beliefs
-        self.lsb[s] = 0.0
-        if p.lsb0 is not None:
-            self.lsb[s, : p.LATENT] = p.lsb0
+            q0 = float(init["q"])
+            sigmasq0 = float(init["sigmasq"])
         else:
-            self.lsb[s, : p.LATENT] = 1.0 / p.LATENT
+            if p.lsb0 is not None:
+                lsb0 = np.asarray(p.lsb0, dtype=np.float64).copy()
+                if lsb0.ndim != 1 or lsb0.size == 0:
+                    raise ValueError("lsb0 must be a non-empty 1-D array.")
+                n_states = lsb0.size
+            elif p.initialex is not None:
+                initialex = np.asarray(p.initialex, dtype=np.float64)
+                if initialex.ndim != 3:
+                    raise ValueError(
+                        "initialex must have shape (REWARDS, CUES, K_0)."
+                    )
+                n_states = initialex.shape[-1]
+                if n_states == 0:
+                    raise ValueError("initialex must contain at least one state.")
+                lsb0 = np.full(n_states, 1.0 / n_states, dtype=np.float64)
+            else:
+                n_states = 1
+                lsb0 = np.ones(1, dtype=np.float64)
 
-        # Covariance: identity per (dim, state)
-        self.B[s] = 0.0
-        for d in range(p.REWARDS):
-            for l in range(latent_total):
-                self.B[s, :, :, d, l] = np.eye(p.CUES)
+            # Associative strengths; initialex can also determine K_0.
+            if p.initialex is None:
+                V0 = np.zeros((p.REWARDS, p.CUES, n_states), dtype=np.float64)
+            else:
+                V0 = np.asarray(p.initialex, dtype=np.float64).copy()
+                if V0.shape != (p.REWARDS, p.CUES, n_states):
+                    raise ValueError(
+                        "initialex must have shape "
+                        f"({p.REWARDS}, {p.CUES}, {n_states}); got {V0.shape}."
+                    )
 
-        # Scalars
-        self.Lmax[s] = 1
-        self.q[s] = 0.0
-        self.sigmasq[s] = p.sigma0 ** 2
+            # Covariance: identity per reward dimension and latent state.
+            B0 = np.zeros(
+                (p.CUES, p.CUES, p.REWARDS, n_states), dtype=np.float64
+            )
+            for d in range(p.REWARDS):
+                for state in range(n_states):
+                    B0[:, :, d, state] = np.eye(p.CUES)
 
-        # Per-trial record: unset
-        self.arm[s] = -1
-        self.reward[s] = np.nan
-        self.expected_reward_0[s] = np.nan
-        self.expected_reward[s] = np.nan
+            q0 = 0.0
+            sigmasq0 = p.sigma0 ** 2
 
-    def _grow_if_needed(self, required_len: int) -> None:
-        """Extend history arrays so slot ``required_len - 1`` is addressable.
+        if p.lsb0 is not None and p.initialex is not None and p.initialV is None:
+            if np.asarray(p.initialex).shape[-1] != lsb0.size:
+                raise ValueError(
+                    "The final dimension of initialex must match len(lsb0)."
+                )
 
-        Args:
-            required_len: Minimum number of history slots required.
-        """
-        if required_len <= self._capacity:
-            return
-        new_capacity = max(required_len, 2 * self._capacity)
-        pad = new_capacity - self._capacity
-        p = self.par
-        for name, shape_fn, dtype in _ARRAY_SPECS:
-            old = getattr(self, name)
-            pad_arr = np.full((pad,) + shape_fn(p), np.nan, dtype=dtype)
-            setattr(self, name, np.concatenate([old, pad_arr], axis=0))
-        self._capacity = new_capacity
+        # Reset all histories. Every variable has exactly one entry per slot.
+        self.V = [V0.copy()]
+        self.B = [B0.copy()]
+        self.lsb = [lsb0.copy()]
+        self.sigmasq = [float(sigmasq0)]
+        self.q = [float(q0)]
+        self.arm = [-1]
+        self.reward = [np.full(p.REWARDS, np.nan, dtype=np.float64)]
+        self.expected_reward_0 = [
+            np.full((p.REWARDS, p.ARMS), np.nan, dtype=np.float64)
+        ]
+        self.expected_reward = [
+            np.full((p.REWARDS, n_states), np.nan, dtype=np.float64)
+        ]
 
     # -- public API ------------------------------------------------------
 
@@ -279,11 +310,12 @@ class LatentState:
         Args:
             world: Observation dict with keys:
 
-                * ``'c_vec'`` — cues, shape ``(REWARDS, CUES, LATENT_TOTAL, ARMS)``.
-                * ``'reward'`` — reward, shape ``(REWARDS, ARMS)`` or coercible.
+                * ``'c_vec'`` -- cues, shape ``(REWARDS, CUES, ARMS)``.
+                  The same cue representation is used for every latent state.
+                * ``'reward'`` -- reward, shape ``(REWARDS, ARMS)`` or coercible.
 
             t: Optional 1-based trial index. If provided, overwrites
-                ``self.par.t`` (transitional — will move to Task).
+                ``self.par.t`` (transitional -- will move to Task).
 
         Returns:
             ``self`` (for chaining).
@@ -292,77 +324,102 @@ class LatentState:
         if t is not None:
             p.t = t
 
+        # Inputs
+        reward = _as_2d(
+            np.asarray(world["reward"]) - p.center, p.REWARDS, p.ARMS
+        )
+        c_vec = np.asarray(world["c_vec"], dtype=np.float64)
+        expected_cue_shape = (p.REWARDS, p.CUES, p.ARMS)
+        if c_vec.shape != expected_cue_shape:
+            raise ValueError(
+                f"world['c_vec'] must have shape {expected_cue_shape}; "
+                f"got {c_vec.shape}."
+            )
+        expected_reward_shape = (p.REWARDS, p.ARMS)
+        if reward.shape != expected_reward_shape:
+            raise ValueError(
+                f"world['reward'] must resolve to shape {expected_reward_shape}; "
+                f"got {reward.shape}."
+            )
+
         s = self.step
         s1 = s + 1
-        self._grow_if_needed(s1 + 1)
 
-        # Copy persistent state forward (in-place at s1)
-        for name in ("V", "B", "lsb", "sigmasq", "Lmax", "q"):
-            getattr(self, name)[s1] = getattr(self, name)[s]
+        # Append independent copies / values for every history variable.
+        self.V.append(self.V[s].copy())
+        self.B.append(self.B[s].copy())
+        self.lsb.append(self.lsb[s].copy())
+        self.sigmasq.append(float(self.sigmasq[s]))
+        self.q.append(float(self.q[s]))
+        self.arm.append(-1)
+        self.reward.append(np.full(p.REWARDS, np.nan, dtype=np.float64))
+        self.expected_reward_0.append(
+            np.full((p.REWARDS, p.ARMS), np.nan, dtype=np.float64)
+        )
+        self.expected_reward.append(
+            np.full(
+                (p.REWARDS, self.lsb[s1].size),
+                np.nan,
+                dtype=np.float64,
+            )
+        )
 
-        # Reset per-trial record
-        self.arm[s1] = -1
-        self.reward[s1] = np.nan
-        self.expected_reward_0[s1] = np.nan
-        self.expected_reward[s1] = np.nan
-
-        # Inputs
-        reward = _as_2d(np.asarray(world["reward"]) - p.center, p.REWARDS, p.ARMS)
-        c_vec = np.asarray(world["c_vec"])            # (REWARDS, CUES, LATENT_TOTAL, ARMS)
-
-        # (1) Context / temporal shift on beliefs
+        # (1) Context / temporal shift on beliefs.
         self._context_shift(s1)
 
-        # (2) Predictions
+        # (2) Predictions under each latent state and each available arm.
         V_s1 = self.V[s1]
-        expected_reward = np.reshape(
-            np.sum(V_s1[..., None] * c_vec, axis=1),
-            (p.REWARDS, p.LATENT_TOTAL, p.ARMS),
+        # Value function per arm, latent state: (REWARDS, K, ARMS)
+        expected_reward_all = np.sum(
+            V_s1[..., None] * c_vec[:, :, None, :], axis=1
         )
-        expected_reward_0 = np.reshape(
-            np.sum(expected_reward * self.lsb[s1][None, :, None], axis=1),
-            (p.REWARDS, p.ARMS),
+        # Value function per arm: (REWARDS, ARMS)
+        # We use lsb[None, :, None] to broadcast (R, K, A) * (1, K, 1)
+        expected_reward_0 = np.sum(
+            expected_reward_all * self.lsb[s1][None, :, None], axis=1
         )
         self.expected_reward_0[s1] = expected_reward_0
 
-        # (3) Arm selection
-        arm, _ = SoftMaxChoice(expected_reward_0, self._legacy_par())
+        # (3) Arm selection.
+        arm, _ = SoftMaxChoice(expected_reward_0, beta=p.beta)
         self.arm[s1] = arm
 
-        # (4) Slice by chosen arm
-        reward_sl = reward[:, arm]                          # (REWARDS,)
-        expected_reward_sl = expected_reward[:, :, arm]                         # (REWARDS, LATENT_TOTAL)
-        c_vec_sl = c_vec[:, :, :, arm]                # (REWARDS, CUES, LATENT_TOTAL)
-        self.reward[s1] = reward_sl
-        self.expected_reward[s1] = expected_reward_sl
+        # (4) Slice by chosen arm. Cue representation is shared by states.
+        reward_arm = reward[:, arm]                           # (REWARDS,)
+        expected_reward_arm = expected_reward_all[:, :, arm]  # (REWARDS, K)
+        c_vec_arm = c_vec[:, :, arm]                          # (REWARDS, CUES)
+        self.reward[s1] = reward_arm
+        self.expected_reward[s1] = expected_reward_arm.copy()
 
-        # (5) Prior variance (before this trial's update)
+        # (5) Prior variance (before this trial's update).
         sigmasq0 = self.sigmasq[s]
 
-        # (6) Belief update, state creation, associative update
-        LL = self._log_likelihood(s1, reward_sl, expected_reward_sl, sigmasq0)
-        self.lsb[s1] = self._update_beliefs(s1, LL)
-        self._maybe_add_state(s1, c_vec_sl, reward_sl, LL)
-        self._update_v_b(s1, c_vec_sl, reward_sl, sigmasq0)
+        # (6) Belief update, state creation, associative update.
+        ll = self._log_likelihood(s1, reward_arm, expected_reward_arm, sigmasq0)
+        self.lsb[s1] = self._update_beliefs(s1, ll)
+        self._maybe_add_state(s1, c_vec_arm, reward_arm, ll)
+        self._update_v_b(s1, c_vec_arm, reward_arm, sigmasq0)
 
         self.step = s1
         return self
 
+
     def reset(self) -> "LatentState":
-        """Reset to the initial state, keeping the allocated capacity.
+        """Reset all histories to the initial state.
 
         Returns:
             ``self``.
         """
-        self._initialize_slot(0)
+        self._initialize_history()
         self.step = 0
         return self
+
 
     def save_state(self) -> dict:
         """Snapshot the current state for ``Parameters.initialV``.
 
         Returns:
-            Dict with copies of ``V``, ``B``, ``lsb``, ``Lmax``, ``q``
+            Dict with copies of ``V``, ``B``, ``lsb``, derived ``Lmax``, ``q``,
             and ``sigmasq`` at ``self.step``.
         """
         s = self.step
@@ -370,12 +427,13 @@ class LatentState:
             "V": self.V[s].copy(),
             "B": self.B[s].copy(),
             "lsb": self.lsb[s].copy(),
-            "Lmax": int(self.Lmax[s]),
+            "Lmax": int(self.lsb[s].size),
             "q": float(self.q[s]),
             "sigmasq": float(self.sigmasq[s]),
         }
 
     # -- internal: model pieces -----------------------------------------
+
 
     def _context_shift(self, s: int) -> None:
         """Apply temporal decay and/or explicit context reset to beliefs.
@@ -384,20 +442,20 @@ class LatentState:
             s: History slot whose beliefs are updated in place.
         """
         p = self.par
-        lsb = self.lsb[s]                             # view into history
-        Lmax = int(self.Lmax[s])
+        lsb = self.lsb[s]
+        n_states = lsb.size
 
-        # Temporal decay toward uniform (per elapsed time between trials)
+        # Temporal decay toward uniform (per elapsed time between trials).
         if p.t != 1 and p.time is not None:
             elapsed = p.time[p.t - 1] - p.time[p.t - 2]
             prob_stay = (1 - p.gamma) ** (elapsed - 1)
-            n = Lmax * p.LATENT
-            lsb[:n] = lsb[:n] * prob_stay + (1 - prob_stay) / n
+            lsb[:] = lsb * prob_stay + (1 - prob_stay) / n_states
 
-        # Explicit context reset: uniform over active states, normalized
+        # Explicit context reset: uniform over currently active states.
         if p.context is not None and p.t in p.context:
-            lsb[: p.LATENT * Lmax] = 1.0
+            lsb[:] = 1.0
             lsb[:] = lsb / np.sum(lsb)
+
 
     def _log_likelihood(
         self,
@@ -409,93 +467,85 @@ class LatentState:
         """Per-state Gaussian log-likelihood of the observed reward.
 
         Args:
-            s: History slot whose ``Lmax`` is read.
+            s: History slot whose active-state count is used for validation.
             reward: Realized reward, shape ``(REWARDS,)``.
-            expected_reward: Per-state predictions for the chosen arm, shape ``(REWARDS, LATENT_TOTAL)``.
+            expected_reward: Per-state predictions for the chosen arm, shape
+                ``(REWARDS, K)``.
             sigmasq: Variance used to scale squared error.
 
         Returns:
-            Log-likelihood vector of shape ``(LATENT_TOTAL,)``. Active states
-            get the data term; the next inactive block is neutral (0);
-            everything beyond is ``-inf``.
+            Log-likelihood vector of shape ``(K,)`` for currently active states.
         """
-        p = self.par
-        latent_total = p.LATENT_TOTAL
-        Lmax = int(self.Lmax[s])
-
-        LL = np.zeros(latent_total)
-        ix_limit = p.LATENT * (Lmax + 1)
-        LL[ix_limit:] = -np.inf
-        ix = p.LATENT * Lmax
-        LL[:ix] = np.sum(
-            -(reward[:, None] - expected_reward[:, :ix]) ** 2 / (2 * sigmasq),
+        n_states = self.lsb[s].size
+        if expected_reward.shape != (self.par.REWARDS, n_states):
+            raise ValueError(
+                "expected_reward must have shape "
+                f"({self.par.REWARDS}, {n_states}); got {expected_reward.shape}."
+            )
+        return np.sum(
+            -(reward[:, None] - expected_reward) ** 2 / (2 * sigmasq),
             axis=0,
         )
-        return LL
 
-    def _update_beliefs(self, s: int, LL: np.ndarray) -> np.ndarray:
-        """Prior × likelihood, renormalized over active states.
+
+    def _update_beliefs(self, s: int, ll: np.ndarray) -> np.ndarray:
+        """Prior times likelihood, renormalized over active states.
 
         Args:
             s: History slot whose prior beliefs are read.
-            LL: Log-likelihood vector from :meth:`_log_likelihood`.
+            ll: Log-likelihood vector from :meth:`_log_likelihood`.
 
         Returns:
-            New belief vector of shape ``(LATENT_TOTAL,)``.
+            New belief vector with the same length as the current state support.
         """
         p = self.par
-        Lmax = int(self.Lmax[s])
-        ix = Lmax * p.LATENT
+        prior_beliefs = self.lsb[s]
+        n_states = prior_beliefs.size
 
         prior = (
-            (1 - p.gamma) * self.lsb[s][:ix] + p.gamma / (Lmax * p.LATENT)
+            (1 - p.gamma) * prior_beliefs + p.gamma / n_states
         )
-        scaled_lik = np.exp(LL[:ix] - np.max(LL[:ix]))
-
-        out = np.zeros(p.LATENT_TOTAL)
-        out[:ix] = prior * scaled_lik
+        scaled_ll = np.exp(ll - np.max(ll))
+        out = prior * scaled_ll
         return out / np.sum(out)
+
 
     def _maybe_add_state(
         self,
         s: int,
         c_vec: np.ndarray,
         reward: np.ndarray,
-        LL: np.ndarray,
+        ll: np.ndarray,
     ) -> None:
-        """Change-point test; spawn a new latent state if ``q`` crosses ``eta``.
+        """Test for a change point and append one new latent state if needed.
 
-        Faithful port of the MATLAB original. Note that the freshly
-        activated state's associations are written to slot
-        ``new_Lmax - 1`` of the last axis — this coincides with the first
-        slot of the new block only when ``LATENT == 1``. Behaviour is preserved
-        as-is for compatibility with the original implementation.
+        The candidate state's log-likelihood is neutral (zero), as in the
+        original implementation's inactive candidate block. When a change
+        point is detected, one new belief, associative-strength slice, and
+        covariance slice are appended.
 
         Args:
             s: History slot being updated in place.
-            c_vec: Cues for the chosen arm, shape ``(REWARDS, CUES, LATENT_TOTAL)``.
+            c_vec: Shared cues for the chosen arm, shape ``(REWARDS, CUES)``.
             reward: Realized reward, shape ``(REWARDS,)``.
-            LL: Log-likelihood vector (see :meth:`_log_likelihood`).
+            ll: Log-likelihood vector over the currently active states.
         """
         p = self.par
-        LATENT = p.LATENT
-        Lmax = int(self.Lmax[s])
-        if Lmax >= p.LATENT_MAX:
-            return
+        beliefs = self.lsb[s]
+        n_states = beliefs.size
 
-        ix_active = Lmax * LATENT
-        ix_new_end = (Lmax + 1) * LATENT
+        # Include the neutral candidate state's likelihood (log-likelihood 0)
+        # when obtaining the common scale, matching the previous comparison.
+        candidate_ll = 0.0
+        mx = np.max(np.exp(np.append(ll, candidate_ll)))
 
-        mx = np.max(np.exp(LL[:ix_new_end]))
-
-        # Scaled likelihood if we keep the current active set
-        stay = (
-            (1 - p.gamma) * self.lsb[s][:ix_active] + p.gamma / (Lmax * LATENT)
-        ) * np.exp(LL[:ix_active] - mx)
+        # Scaled likelihood if we keep the current active set.
+        stay_prior = (1 - p.gamma) * beliefs + p.gamma / n_states
+        stay = stay_prior * np.exp(ll - mx)
         l0 = np.sum(stay)
 
-        # Scaled likelihood if we spawn a new state
-        l1 = np.sum((1.0 / LATENT) * np.exp(LL[ix_active:ix_new_end] - mx))
+        # Scaled likelihood if we spawn one new state.
+        l1 = np.exp(candidate_ll - mx)
 
         with np.errstate(divide="ignore", invalid="ignore"):
             log_ratio = np.log(l1) - np.log(l0)
@@ -507,25 +557,34 @@ class LatentState:
             self.q[s] = new_q
             return
 
-        # --- spawn ---
-        new_Lmax = Lmax + 1
-        self.Lmax[s] = new_Lmax
+        # --- spawn one state ---
+        n_new_states = n_states + 1
         self.q[s] = 0.0
 
-        tmp = np.zeros(p.LATENT_TOTAL)
-        tmp[:ix_new_end] = (
-            (1 - p.gamma) * self.lsb[s][:ix_new_end]
-            + p.gamma / (new_Lmax * LATENT)
-        ) * np.exp(LL[:ix_new_end])
-
-        # Initialize associations for the freshly activated state
-        c_current = c_vec[:, :, new_Lmax - 1]                 # (REWARDS, CUES)
-        Vnew = c_current * reward[:, None] / np.sum(
-            c_current ** 2, axis=1, keepdims=True
+        # Update beliefs over the old states plus the newly created state.
+        new_state_prior = np.concatenate(
+            (
+                (1 - p.gamma) * beliefs + p.gamma / n_new_states,
+                np.array([p.gamma / n_new_states]),
+            )
         )
-        self.V[s, :, :, new_Lmax - 1] = Vnew
+        all_ll = np.append(ll, candidate_ll)
+        updated_beliefs = new_state_prior * np.exp(all_ll)
+        self.lsb[s] = updated_beliefs / np.sum(updated_beliefs)
 
-        self.lsb[s] = tmp / np.sum(tmp)
+        # Initialize associative strengths for the new state's shared cues.
+        Vnew = c_vec * reward[:, None] / np.sum(
+            c_vec ** 2, axis=1, keepdims=True
+        )
+        self.V[s] = np.concatenate((self.V[s], Vnew[:, :, None]), axis=-1)
+
+        # Initialize the new state's covariance to the identity per reward dim.
+        Bnew = np.zeros(
+            (p.CUES, p.CUES, p.REWARDS, 1), dtype=np.float64
+        )
+        for d in range(p.REWARDS):
+            Bnew[:, :, d, 0] = np.eye(p.CUES)
+        self.B[s] = np.concatenate((self.B[s], Bnew), axis=-1)
 
     def _update_v_b(
         self,
@@ -534,91 +593,64 @@ class LatentState:
         reward: np.ndarray,
         sigmasq0: float,
     ) -> None:
-        """Rescorla–Wagner update of ``V`` and ``B``, plus variance tracking.
+        """Rescorla-Wagner update of ``V`` and ``B``, plus variance tracking.
 
         Args:
             s: History slot being updated in place.
-            c_vec: Cues for the chosen arm, shape ``(REWARDS, CUES, LATENT_TOTAL)``.
+            c_vec: Shared cues for the chosen arm, shape ``(REWARDS, CUES)``.
             reward: Realized reward, shape ``(REWARDS,)``.
-            sigmasq0: Prior variance (before this trial's update); used
-                both inside and at the end of the EMA step.
+            sigmasq0: Prior variance (before this trial's update); used both
+                inside and at the end of the exp. moving avg. step.
         """
         p = self.par
-        V = self.V[s]                                 # view
-        B = self.B[s]                                 # view
-        lsb = self.lsb[s]                             # view
-        Lmax = int(self.Lmax[s])
+        V = self.V[s]
+        B = self.B[s]
+        lsb = self.lsb[s]
+        n_states = lsb.size
         sigmasq = float(self.sigmasq[s])
 
-        # Rumination iterations (fewer on the last trial)
+        # Rumination iterations (fewer on the last trial).
         if p.t == p.ntrials or p.time is None:
             nIter = 1
         else:
             nIter = min(p.chi, round(p.time[p.t] - p.time[p.t - 1]))
 
-        expected_reward = np.reshape(np.sum(V * c_vec, axis=1), (p.REWARDS, p.LATENT_TOTAL))
+        expected_reward = np.sum(V * c_vec[:, :, None], axis=1)
 
         for d in range(p.REWARDS):
-            for l1 in range(p.LATENT):
-                for l2 in range(Lmax):
-                    l = l2 * p.LATENT + l1
+            for state in range(n_states):
+                # Exponentially weighted covariance.
+                c_d = c_vec[d, :]
+                c_outer = np.outer(c_d, c_d)
+                B[:, :, d, state] = B[:, :, d, state] + p.alpha2 * (
+                    lsb[state] * c_outer - B[:, :, d, state]
+                )
 
-                    # Exponentially weighted covariance
-                    c_dl = c_vec[d, :, l]
-                    c_outer = np.outer(c_dl, c_dl)
-                    B[:, :, d, l] = B[:, :, d, l] + p.alpha2 * (
-                        lsb[l] * c_outer - B[:, :, d, l]
-                    )
+                # Associability: alpha0 * belief * B^{-1} c.
+                tmp = p.alpha0 * lsb[state] * np.linalg.solve(
+                    B[:, :, d, state], c_d
+                )
 
-                    # Associability: alpha0 * lsb * B^{-1} c
-                    tmp = p.alpha0 * lsb[l] * np.linalg.solve(
-                        B[:, :, d, l], c_dl
-                    )
+                # Rescorla-Wagner update.
+                TD = reward[d] - expected_reward[d, state]
+                V[d, :, state] = V[d, :, state] + tmp * TD
+                sigmasq = sigmasq + p.alpha1 * lsb[state] * TD ** 2
 
-                    # Rescorla–Wagner
-                    TD = reward[d] - expected_reward[d, l]
-                    V[d, :, l] = V[d, :, l] + tmp * TD
-                    sigmasq = sigmasq + p.alpha1 * lsb[l] * TD ** 2
+                # Rumination.
+                for _ in range(nIter - 1):
+                    expected_reward = np.sum(V * c_vec[:, :, None], axis=1)
+                    TD = reward[d] - expected_reward[d, state]
+                    V[d, :, state] = V[d, :, state] + tmp * TD
 
-                    # Rumination
-                    for _ in range(nIter - 1):
-                        expected_reward = np.reshape(
-                            np.sum(V * c_vec, axis=1),
-                            (p.REWARDS, p.LATENT_TOTAL),
-                        )
-                        TD = reward[d] - expected_reward[d, l]
-                        V[d, :, l] = V[d, :, l] + tmp * TD
-
-        # Finish variance EMA step
+        # Finish variance exp. moving avg. step.
         sigmasq = sigmasq - p.alpha1 * sigmasq0
         self.sigmasq[s] = sigmasq
 
-    # -- compatibility shim (removed in task refactor) ------------------
-
-    def _legacy_par(self) -> dict:
-        """Rebuild the flat+``ls`` dict shape that ``SoftMaxChoice`` expects.
-
-        Returns:
-            Dict matching the original ``par`` layout.
-        """
-        p = self.par
-        return {
-            # Legacy keys retained for SoftMaxChoice compatibility.
-            "D": p.REWARDS, "C": p.CUES, "A": p.ARMS, "L": p.LATENT,
-            "t": p.t, "ntrials": p.ntrials,
-            "time": p.time, "context": p.context,
-            "center": p.center, "beta": p.beta,
-            "ls": {
-                "ncop": p.LATENT_MAX, "gamma": p.gamma, "delta": p.delta,
-                "eta": p.eta, "sigma0": p.sigma0, "chi": p.chi,
-                "alpha0": p.alpha0, "alpha1": p.alpha1, "alpha2": p.alpha2,
-            },
-        }
 
     def __repr__(self) -> str:
         p = self.par
         return (
             f"LatentState(REWARDS={p.REWARDS}, CUES={p.CUES}, ARMS={p.ARMS}, "
-            f"LATENT={p.LATENT}, LATENT_MAX={p.LATENT_MAX}, "
-            f"step={self.step}/{self._capacity - 1})"
+            f"n_states={self.lsb[self.step].size}, "
+            f"step={self.step}/{len(self.lsb) - 1})"
         )
