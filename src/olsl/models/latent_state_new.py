@@ -99,18 +99,18 @@ class Parameters:
     """Softmax inverse temperature (consumed by ``SoftMaxChoice``)."""
 
     # --- optional initialization overrides ---
-    initialex: Optional[np.ndarray] = None
+    V0: Optional[np.ndarray] = None
     """Initial associative strengths, shape ``(REWARDS, CUES, L_0)``."""
 
     lsb0: Optional[np.ndarray] = None
     """Initial beliefs over ``L_0`` states, shape ``(L_0,)``.
 
-    If omitted, one initial state with belief 1 is used. When ``initialex`` is
+    If omitted, one initial state with belief 1 is used. When ``V0`` is
     supplied without ``lsb0``, its final dimension determines ``L_0`` and the
     initial beliefs are uniform over those states.
     """
 
-    initialV: Optional[dict] = None
+    init: Optional[dict] = None
     """Full saved agent state to restore into the initial history slot."""
 
     # --- task-schedule fields (TODO: move to Task) ---
@@ -176,7 +176,7 @@ class LatentState:
         V, B, lsb, expected_reward: Per-trial array histories.
         sigmasq, q, arm: Per-trial scalar histories.
         reward, expected_reward_0: Per-trial array histories.
-        Lmax: Derived history of active latent-state counts, obtained from
+        latent: Derived history of active latent-state counts, obtained from
             ``len(lsb[t])`` rather than stored independently.
     """
 
@@ -199,7 +199,7 @@ class LatentState:
 
 
     @property
-    def Lmax(self) -> list[int]:
+    def latent(self) -> list[int]:
         """Derived number of active latent states at each history slot."""
         return [len(beliefs) for beliefs in self.lsb]
 
@@ -210,30 +210,30 @@ class LatentState:
         """Create the initial state and initialize its history records."""
         p = self.par
 
-        if p.initialV is not None:
-            init = p.initialV
+        if p.init is not None:
+            init = p.init
             lsb0 = np.asarray(init["lsb"], dtype=np.float64).copy()
             V0 = np.asarray(init["V"], dtype=np.float64).copy()
             B0 = np.asarray(init["B"], dtype=np.float64).copy()
 
             if lsb0.ndim != 1 or lsb0.size == 0:
-                raise ValueError("initialV['lsb'] must be a non-empty 1-D array.")
+                raise ValueError("init['lsb'] must be a non-empty 1-D array.")
             l_states = lsb0.size
             if V0.shape != (p.REWARDS, p.CUES, l_states):
                 raise ValueError(
-                    "initialV['V'] must have shape "
+                    "init['V'] must have shape "
                     f"({p.REWARDS}, {p.CUES}, {l_states}); got {V0.shape}."
                 )
             if B0.shape != (p.CUES, p.CUES, p.REWARDS, l_states):
                 raise ValueError(
-                    "initialV['B'] must have shape "
+                    "init['B'] must have shape "
                     f"({p.CUES}, {p.CUES}, {p.REWARDS}, {l_states}); "
                     f"got {B0.shape}."
                 )
-            if "Lmax" in init and int(init["Lmax"]) != l_states:
+            if "latent" in init and int(init["latent"]) != l_states:
                 raise ValueError(
-                    "initialV uses the previous fixed/block latent-state "
-                    "allocation. Its stored Lmax does not match len(lsb); "
+                    "init uses the previous fixed/block latent-state "
+                    "allocation. Its stored latent does not match len(lsb); "
                     "create a state snapshot using this dynamic-state version."
                 )
 
@@ -245,28 +245,28 @@ class LatentState:
                 if lsb0.ndim != 1 or lsb0.size == 0:
                     raise ValueError("lsb0 must be a non-empty 1-D array.")
                 l_states = lsb0.size
-            elif p.initialex is not None:
-                initialex = np.asarray(p.initialex, dtype=np.float64)
-                if initialex.ndim != 3:
+            elif p.V0 is not None:
+                V0 = np.asarray(p.V0, dtype=np.float64)
+                if V0.ndim != 3:
                     raise ValueError(
-                        "initialex must have shape (REWARDS, CUES, L_0)."
+                        "V0 must have shape (REWARDS, CUES, L_0)."
                     )
-                l_states = initialex.shape[-1]
+                l_states = V0.shape[-1]
                 if l_states == 0:
-                    raise ValueError("initialex must contain at least one state.")
+                    raise ValueError("V0 must contain at least one state.")
                 lsb0 = np.full(l_states, 1.0 / l_states, dtype=np.float64)
             else:
                 l_states = 1
                 lsb0 = np.ones(1, dtype=np.float64)
 
-            # Associative strengths; initialex can also determine L_0.
-            if p.initialex is None:
+            # Associative strengths; V0 can also determine L_0.
+            if p.V0 is None:
                 V0 = np.zeros((p.REWARDS, p.CUES, l_states), dtype=np.float64)
             else:
-                V0 = np.asarray(p.initialex, dtype=np.float64).copy()
+                V0 = np.asarray(p.V0, dtype=np.float64).copy()
                 if V0.shape != (p.REWARDS, p.CUES, l_states):
                     raise ValueError(
-                        "initialex must have shape "
+                        "V0 must have shape "
                         f"({p.REWARDS}, {p.CUES}, {l_states}); got {V0.shape}."
                     )
 
@@ -281,10 +281,10 @@ class LatentState:
             q0 = 0.0
             sigmasq0 = p.sigma0 ** 2
 
-        if p.lsb0 is not None and p.initialex is not None and p.initialV is None:
-            if np.asarray(p.initialex).shape[-1] != lsb0.size:
+        if p.lsb0 is not None and p.V0 is not None and p.init is None:
+            if np.asarray(p.V0).shape[-1] != lsb0.size:
                 raise ValueError(
-                    "The final dimension of initialex must match len(lsb0)."
+                    "The final dimension of V0 must match len(lsb0)."
                 )
 
         # Reset all histories. Every variable has exactly one entry per slot.
@@ -416,10 +416,10 @@ class LatentState:
 
 
     def save_state(self) -> dict:
-        """Snapshot the current state for ``Parameters.initialV``.
+        """Snapshot the current state for ``Parameters.init``.
 
         Returns:
-            Dict with copies of ``V``, ``B``, ``lsb``, derived ``Lmax``, ``q``,
+            Dict with copies of ``V``, ``B``, ``lsb``, derived ``latent``, ``q``,
             and ``sigmasq`` at ``self.step``.
         """
         s = self.step
@@ -427,7 +427,7 @@ class LatentState:
             "V": self.V[s].copy(),
             "B": self.B[s].copy(),
             "lsb": self.lsb[s].copy(),
-            "Lmax": int(self.lsb[s].size),
+            "latent": int(self.lsb[s].size),
             "q": float(self.q[s]),
             "sigmasq": float(self.sigmasq[s]),
         }
