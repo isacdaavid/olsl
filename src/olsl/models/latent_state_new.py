@@ -18,20 +18,20 @@ The number of latent states is dynamic. A change-point event adds one state,
 so the latent-state dimension can differ between history slots.
 
 State
-    V       : list[(REWARDS, CUES, K_t)]       associative strengths
-    B       : list[(CUES, CUES, REWARDS, K_t)] associability covariance
-    lsb     : list[(K_t,)]                    latent-state beliefs
-    sigmasq : list[float]                     running reward variance
-    q       : list[float]                     change-point statistic
+    V       : list[(REWARDS, CUES, L_t)]       associative strengths
+    B       : list[(CUES, CUES, REWARDS, L_t)] associability covariance
+    lsb     : list[(L_t,)]                     latent-state beliefs
+    sigmasq : list[float]                      running reward variance
+    q       : list[float]                      change-point statistic
 
 Per-trial record
     arm               : list[int]             chosen arm index
     reward            : list[(REWARDS,)]      realized reward
     expected_reward_0 : list[(REWARDS, ARMS)]  pre-selection value per arm
-    expected_reward   : list[(REWARDS, K_before)] predictions for chosen arm,
+    expected_reward   : list[(REWARDS, L_before)] predictions for chosen arm,
                                                before any state is added
 
-Here ``K_t`` is the number of latent states represented at history slot ``t``.
+Here ``L_t`` is the number of latent states represented at history slot ``t``.
 The cue representation supplied by the task is shared across latent states:
 ``world['c_vec']`` has shape ``(REWARDS, CUES, ARMS)``.
 """
@@ -100,13 +100,13 @@ class Parameters:
 
     # --- optional initialization overrides ---
     initialex: Optional[np.ndarray] = None
-    """Initial associative strengths, shape ``(REWARDS, CUES, K_0)``."""
+    """Initial associative strengths, shape ``(REWARDS, CUES, L_0)``."""
 
     lsb0: Optional[np.ndarray] = None
-    """Initial beliefs over ``K_0`` states, shape ``(K_0,)``.
+    """Initial beliefs over ``L_0`` states, shape ``(L_0,)``.
 
     If omitted, one initial state with belief 1 is used. When ``initialex`` is
-    supplied without ``lsb0``, its final dimension determines ``K_0`` and the
+    supplied without ``lsb0``, its final dimension determines ``L_0`` and the
     initial beliefs are uniform over those states.
     """
 
@@ -249,7 +249,7 @@ class LatentState:
                 initialex = np.asarray(p.initialex, dtype=np.float64)
                 if initialex.ndim != 3:
                     raise ValueError(
-                        "initialex must have shape (REWARDS, CUES, K_0)."
+                        "initialex must have shape (REWARDS, CUES, L_0)."
                     )
                 n_states = initialex.shape[-1]
                 if n_states == 0:
@@ -259,7 +259,7 @@ class LatentState:
                 n_states = 1
                 lsb0 = np.ones(1, dtype=np.float64)
 
-            # Associative strengths; initialex can also determine K_0.
+            # Associative strengths; initialex can also determine L_0.
             if p.initialex is None:
                 V0 = np.zeros((p.REWARDS, p.CUES, n_states), dtype=np.float64)
             else:
