@@ -68,34 +68,34 @@ class Parameters:
     """Number of arms / actions."""
 
     # --- learning dynamics ---
-    alpha0: float = 0.1
+    alpha0: float = 0.05
     """Associability scale."""
 
-    alpha1: float = 0.1
+    alpha1: float = 0.05
     """Variance-tracking rate."""
 
-    alpha2: float = 0.1
+    alpha2: float = 0.05
     """Covariance (B) tracking rate."""
 
-    gamma: float = 0.1
+    gamma: float = 0.05
     """Belief stickiness / transition rate."""
 
-    delta: float = 0.1
+    delta: float = 0.6
     """Change-point offset."""
 
-    eta: float = 0.1
+    eta: float = 0.2
     """Change-point threshold."""
 
-    sigma0: float = 1.0
+    sigma0: float = 0.5
     """Initial reward standard deviation."""
 
-    chi: int = 10
+    chi: int = 5
     """Maximum rumination iterations."""
 
     center: float = 0.0
     """Reward baseline subtracted from ``world['reward']``."""
 
-    beta: float = 1.0
+    tau: float = 1.0
     """Softmax inverse temperature (consumed by ``SoftMaxChoice``)."""
 
     # --- optional initialization overrides ---
@@ -381,7 +381,7 @@ class LatentState:
         self.expected_reward_0[s1] = expected_reward_0
 
         # (3) Arm selection.
-        arm, _ = SoftMaxChoice(expected_reward_0, beta=p.beta)
+        arm, _ = SoftMaxChoice(expected_reward_0, tau=p.tau)
         self.arm[s1] = arm
 
         # (4) Slice by chosen arm. Cue representation is shared by states.
