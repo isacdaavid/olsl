@@ -50,11 +50,7 @@ from olsl.common.math import SoftMaxChoice
 
 @dataclass
 class Parameters:
-    """Hyperparameters and (temporary) task-schedule fields.
-
-    The ``t``, ``ntrials``, ``time`` and ``context`` fields are currently
-    carried here because the model still reads them during ``update``.
-    They will move to :class:`Task` in the next refactor step.
+    """Default parameters of the LatentState model.
     """
 
     # --- dimensions ---
@@ -112,19 +108,6 @@ class Parameters:
 
     init: Optional[dict] = None
     """Full saved agent state to restore into the initial history slot."""
-
-    # --- task-schedule fields (TODO: move to Task) ---
-    t: int = 1
-    """1-based trial index (will move to Task)."""
-
-    ntrials: int = 1000
-    """Total number of trials (allocation and schedule hint)."""
-
-    time: Optional[list] = None
-    """Per-trial timestamps, length ``ntrials`` (will move to Task)."""
-
-    context: Optional[list] = None
-    """1-based trial indices at which beliefs reset (will move to Task)."""
 
 
 # ---------------------------------------------------------------------------
@@ -304,7 +287,7 @@ class LatentState:
 
     # -- public API ------------------------------------------------------
 
-    def update(self, world: dict, t: Optional[int] = None) -> "LatentState":
+    def update(self, world: dict) -> "LatentState":
         """Run one trial and append the new state to history.
 
         Args:
@@ -314,15 +297,17 @@ class LatentState:
                   The same cue representation is used for every latent state.
                 * ``'reward'`` -- reward, shape ``(REWARDS, ARMS)`` or coercible.
 
-            t: Optional 1-based trial index. If provided, overwrites
-                ``self.par.t`` (transitional -- will move to Task).
-
         Returns:
             ``self`` (for chaining).
         """
         p = self.par
-        if t is not None:
-            p.t = t
+        # Keep direct agent use possible: schedule metadata is optional, but
+        # Task supplies it to enable timing and context-reset behavior.
+        world = dict(world)
+        world.setdefault("trial", self.step + 1)
+        world.setdefault("ntrials", None)
+        world.setdefault("elapsed", None)
+        world.setdefault("context_reset", False)
 
         # Inputs
         reward = _as_2d(
@@ -365,7 +350,7 @@ class LatentState:
         )
 
         # (1) Context / temporal shift on beliefs.
-        self._context_shift(s1)
+        self._context_shift(s1, world)
 
         # (2) Predictions under each latent state and each available arm.
         V_s1 = self.V[s1]
@@ -398,7 +383,7 @@ class LatentState:
         ll = self._log_likelihood(s1, reward_arm, expected_reward_arm, sigmasq0)
         self.lsb[s1] = self._update_beliefs(s1, ll)
         self._maybe_add_state(s1, c_vec_arm, reward_arm, ll)
-        self._update_v_b(s1, c_vec_arm, reward_arm, sigmasq0)
+        self._update_v_b(s1, c_vec_arm, reward_arm, sigmasq0, world)
 
         self.step = s1
         return self
@@ -435,7 +420,7 @@ class LatentState:
     # -- internal: model pieces -----------------------------------------
 
 
-    def _context_shift(self, s: int) -> None:
+    def _context_shift(self, s: int, world: dict) -> None:
         """Apply temporal decay and/or explicit context reset to beliefs.
 
         Args:
@@ -445,16 +430,16 @@ class LatentState:
         lsb = self.lsb[s]
         l_states = lsb.size
 
-        # Temporal decay toward uniform (per elapsed time between trials).
-        if p.t != 1 and p.time is not None:
-            elapsed = p.time[p.t - 1] - p.time[p.t - 2]
+        # Temporal decay toward uniform, using elapsed time supplied by Task.
+        elapsed = world.get("elapsed")
+        if elapsed is not None and elapsed > 1:
             prob_stay = (1 - p.gamma) ** (elapsed - 1)
             lsb[:] = lsb * prob_stay + (1 - prob_stay) / l_states
 
-        # Explicit context reset: uniform over currently active states.
-        if p.context is not None and p.t in p.context:
-            lsb[:] = 1.0
-            lsb[:] = lsb / np.sum(lsb)
+        # Task marks context changes explicitly; context labels themselves
+        # remain descriptive metadata and are not interpreted as cue inputs.
+        if world.get("context_reset", False):
+            lsb[:] = 1.0 / l_states
 
 
     def _log_likelihood(
@@ -592,6 +577,7 @@ class LatentState:
         c_vec: np.ndarray,
         reward: np.ndarray,
         sigmasq0: float,
+        world: dict,
     ) -> None:
         """Rescorla-Wagner update of ``V`` and ``B``, plus variance tracking.
 
@@ -609,11 +595,13 @@ class LatentState:
         l_states = lsb.size
         sigmasq = float(self.sigmasq[s])
 
-        # Rumination iterations (fewer on the last trial).
-        if p.t == p.ntrials or p.time is None:
+        # Rumination iterations are determined by the elapsed interval
+        # between events. The final trial has no subsequent interval.
+        elapsed = world.get("elapsed")
+        if world["trial"] == world["ntrials"] or elapsed is None:
             nIter = 1
         else:
-            nIter = min(p.chi, round(p.time[p.t] - p.time[p.t - 1]))
+            nIter = max(1, min(p.chi, round(elapsed)))
 
         expected_reward = np.sum(V * c_vec[:, :, None], axis=1)
 
